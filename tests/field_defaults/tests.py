@@ -1,6 +1,8 @@
 from datetime import datetime
+from decimal import Decimal
 from math import pi
 
+from django.core.exceptions import ValidationError
 from django.db import connection
 from django.db.models import Case, F, FloatField, Value, When
 from django.db.models.expressions import (
@@ -44,6 +46,7 @@ class DefaultTests(TestCase):
         self.assertIsInstance(a.id, int)
         self.assertEqual(a.headline, "Default headline")
         self.assertIsInstance(a.pub_date, datetime)
+        self.assertEqual(a.cost, Decimal("3.33"))
 
     @skipIfDBFeature("can_return_columns_from_insert")
     @skipUnlessDBFeature("supports_expression_defaults")
@@ -54,6 +57,7 @@ class DefaultTests(TestCase):
         self.assertIsInstance(a.id, int)
         self.assertEqual(a.headline, "Default headline")
         self.assertIsInstance(a.pub_date, datetime)
+        self.assertEqual(a.cost, Decimal("3.33"))
 
     def test_null_db_default(self):
         obj1 = DBDefaults.objects.create()
@@ -141,12 +145,12 @@ class DefaultTests(TestCase):
         articles = [DBArticle(pub_date=pub_date), DBArticle(pub_date=pub_date)]
         DBArticle.objects.bulk_create(articles)
 
-        headlines = DBArticle.objects.values_list("headline", "pub_date")
+        headlines = DBArticle.objects.values_list("headline", "pub_date", "cost")
         self.assertSequenceEqual(
             headlines,
             [
-                ("Default headline", pub_date),
-                ("Default headline", pub_date),
+                ("Default headline", pub_date, Decimal("3.33")),
+                ("Default headline", pub_date, Decimal("3.33")),
             ],
         )
 
@@ -165,6 +169,23 @@ class DefaultTests(TestCase):
 
         years = DBDefaultsFunction.objects.values_list("year", flat=True)
         self.assertCountEqual(years, [2000, datetime.now().year])
+
+    def test_full_clean(self):
+        obj = DBArticle()
+        obj.full_clean()
+        obj.save()
+        obj.refresh_from_db()
+        self.assertEqual(obj.headline, "Default headline")
+
+        obj = DBArticle(headline="Other title")
+        obj.full_clean()
+        obj.save()
+        obj.refresh_from_db()
+        self.assertEqual(obj.headline, "Other title")
+
+        obj = DBArticle(headline="")
+        with self.assertRaises(ValidationError):
+            obj.full_clean()
 
 
 class AllowedDefaultTests(SimpleTestCase):

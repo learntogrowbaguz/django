@@ -1,10 +1,12 @@
 import decimal
+from unittest import mock
 
 from django.core.management.color import no_style
 from django.db import NotSupportedError, connection, transaction
 from django.db.backends.base.operations import BaseDatabaseOperations
-from django.db.models import DurationField, Value
+from django.db.models import DurationField
 from django.db.models.expressions import Col
+from django.db.models.lookups import Exact
 from django.test import (
     SimpleTestCase,
     TestCase,
@@ -13,6 +15,7 @@ from django.test import (
     skipIfDBFeature,
 )
 from django.utils import timezone
+from django.utils.deprecation import RemovedInDjango60Warning
 
 from ..models import Author, Book
 
@@ -86,16 +89,8 @@ class SimpleDatabaseOperationTests(SimpleTestCase):
     def test_adapt_timefield_value_none(self):
         self.assertIsNone(self.ops.adapt_timefield_value(None))
 
-    def test_adapt_timefield_value_expression(self):
-        value = Value(timezone.now().time())
-        self.assertEqual(self.ops.adapt_timefield_value(value), value)
-
     def test_adapt_datetimefield_value_none(self):
         self.assertIsNone(self.ops.adapt_datetimefield_value(None))
-
-    def test_adapt_datetimefield_value_expression(self):
-        value = Value(timezone.now())
-        self.assertEqual(self.ops.adapt_datetimefield_value(value), value)
 
     def test_adapt_timefield_value(self):
         msg = "Django does not support timezone-aware times."
@@ -179,12 +174,6 @@ class DatabaseOperationTests(TestCase):
     def setUp(self):
         self.ops = BaseDatabaseOperations(connection=connection)
 
-    @skipIfDBFeature("supports_over_clause")
-    def test_window_frame_raise_not_supported_error(self):
-        msg = "This backend does not support window expressions."
-        with self.assertRaisesMessage(NotSupportedError, msg):
-            self.ops.window_frame_rows_start_end()
-
     @skipIfDBFeature("can_distinct_on_fields")
     def test_distinct_on_fields(self):
         msg = "DISTINCT ON fields is not supported by this database backend"
@@ -235,3 +224,25 @@ class SqlFlushTests(TransactionTestCase):
                 self.assertEqual(author.pk, 1)
                 book = Book.objects.create(author=author)
                 self.assertEqual(book.pk, 1)
+
+
+class DeprecationTests(TestCase):
+    def test_field_cast_sql_warning(self):
+        base_ops = BaseDatabaseOperations(connection=connection)
+        msg = (
+            "DatabaseOperations.field_cast_sql() is deprecated use "
+            "DatabaseOperations.lookup_cast() instead."
+        )
+        with self.assertWarnsMessage(RemovedInDjango60Warning, msg) as ctx:
+            base_ops.field_cast_sql("integer", "IntegerField")
+        self.assertEqual(ctx.filename, __file__)
+
+    def test_field_cast_sql_usage_warning(self):
+        compiler = Author.objects.all().query.get_compiler(connection.alias)
+        msg = (
+            "The usage of DatabaseOperations.field_cast_sql() is deprecated. Implement "
+            "DatabaseOperations.lookup_cast() instead."
+        )
+        with mock.patch.object(connection.ops.__class__, "field_cast_sql"):
+            with self.assertRaisesMessage(RemovedInDjango60Warning, msg):
+                Exact("name", "book__author__name").as_sql(compiler, connection)

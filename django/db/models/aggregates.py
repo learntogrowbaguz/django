@@ -1,10 +1,11 @@
 """
 Classes to represent the definitions of aggregate functions.
 """
+
 from django.core.exceptions import FieldError, FullResultSet
-from django.db.models.expressions import Case, Func, Star, Value, When
+from django.db.models.expressions import Case, ColPairs, Func, Star, Value, When
 from django.db.models.fields import IntegerField
-from django.db.models.functions.comparison import Coalesce
+from django.db.models.functions import Coalesce
 from django.db.models.functions.mixins import (
     FixDurationInputMixin,
     NumericOutputFieldMixin,
@@ -49,12 +50,10 @@ class Aggregate(Func):
 
     def get_source_expressions(self):
         source_expressions = super().get_source_expressions()
-        if self.filter:
-            return source_expressions + [self.filter]
-        return source_expressions
+        return source_expressions + [self.filter]
 
     def set_source_expressions(self, exprs):
-        self.filter = self.filter and exprs.pop()
+        *exprs, self.filter = exprs
         return super().set_source_expressions(exprs)
 
     def resolve_expression(
@@ -62,8 +61,10 @@ class Aggregate(Func):
     ):
         # Aggregates are not allowed in UPDATE queries, so ignore for_save
         c = super().resolve_expression(query, allow_joins, reuse, summarize)
-        c.filter = c.filter and c.filter.resolve_expression(
-            query, allow_joins, reuse, summarize
+        c.filter = (
+            c.filter.resolve_expression(query, allow_joins, reuse, summarize)
+            if c.filter
+            else None
         )
         if summarize:
             # Summarized aggregates cannot refer to summarized aggregates.
@@ -103,7 +104,9 @@ class Aggregate(Func):
 
     @property
     def default_alias(self):
-        expressions = self.get_source_expressions()
+        expressions = [
+            expr for expr in self.get_source_expressions() if expr is not None
+        ]
         if len(expressions) == 1 and hasattr(expressions[0], "name"):
             return "%s__%s" % (expressions[0].name, self.name.lower())
         raise TypeError("Complex expressions require an alias")
@@ -163,6 +166,7 @@ class Count(Aggregate):
     output_field = IntegerField()
     allow_distinct = True
     empty_result_set_value = 0
+    allows_composite_expressions = True
 
     def __init__(self, expression, filter=None, **extra):
         if expression == "*":
@@ -170,6 +174,22 @@ class Count(Aggregate):
         if isinstance(expression, Star) and filter is not None:
             raise ValueError("Star cannot be used with filter. Please specify a field.")
         super().__init__(expression, filter=filter, **extra)
+
+    def resolve_expression(self, *args, **kwargs):
+        result = super().resolve_expression(*args, **kwargs)
+        expr = result.source_expressions[0]
+
+        # In case of composite primary keys, count the first column.
+        if isinstance(expr, ColPairs):
+            if self.distinct:
+                raise ValueError(
+                    "COUNT(DISTINCT) doesn't support composite primary keys"
+                )
+
+            cols = expr.get_cols()
+            return Count(cols[0], filter=result.filter)
+
+        return result
 
 
 class Max(Aggregate):

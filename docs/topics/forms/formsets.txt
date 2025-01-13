@@ -48,13 +48,10 @@ following example will create a formset class to display two blank forms:
 
     >>> ArticleFormSet = formset_factory(ArticleForm, extra=2)
 
-Iterating over a formset will render the forms in the order they were
-created. You can change this order by providing an alternate implementation for
-the ``__iter__()`` method.
-
-Formsets can also be indexed into, which returns the corresponding form. If you
-override ``__iter__``, you will need to also override ``__getitem__`` to have
-matching behavior.
+Formsets can be iterated and indexed, accessing forms in the order they were
+created. You can reorder the forms by overriding the default
+:py:meth:`iteration <object.__iter__>` and
+:py:meth:`indexing <object.__getitem__>` behavior if needed.
 
 .. _formsets-initial-data:
 
@@ -374,14 +371,14 @@ is where you define your own validation that works at the formset level:
     ...         if any(self.errors):
     ...             # Don't bother validating the formset unless each form is valid on its own
     ...             return
-    ...         titles = []
+    ...         titles = set()
     ...         for form in self.forms:
     ...             if self.can_delete and self._should_delete_form(form):
     ...                 continue
     ...             title = form.cleaned_data.get("title")
     ...             if title in titles:
     ...                 raise ValidationError("Articles in a set must have distinct titles.")
-    ...             titles.append(title)
+    ...             titles.add(title)
     ...
 
     >>> ArticleFormSet = formset_factory(ArticleForm, formset=BaseArticleFormSet)
@@ -432,16 +429,18 @@ If ``validate_max=True`` is passed to
 that the number of forms in the data set, minus those marked for
 deletion, is less than or equal to ``max_num``.
 
+.. code-block:: pycon
+
     >>> from django.forms import formset_factory
     >>> from myapp.forms import ArticleForm
     >>> ArticleFormSet = formset_factory(ArticleForm, max_num=1, validate_max=True)
     >>> data = {
-    ...     'form-TOTAL_FORMS': '2',
-    ...     'form-INITIAL_FORMS': '0',
-    ...     'form-0-title': 'Test',
-    ...     'form-0-pub_date': '1904-06-16',
-    ...     'form-1-title': 'Test 2',
-    ...     'form-1-pub_date': '1912-06-23',
+    ...     "form-TOTAL_FORMS": "2",
+    ...     "form-INITIAL_FORMS": "0",
+    ...     "form-0-title": "Test",
+    ...     "form-0-pub_date": "1904-06-16",
+    ...     "form-1-title": "Test 2",
+    ...     "form-1-pub_date": "1912-06-23",
     ... }
     >>> formset = ArticleFormSet(data)
     >>> formset.is_valid()
@@ -475,16 +474,18 @@ If ``validate_min=True`` is passed to
 that the number of forms in the data set, minus those marked for
 deletion, is greater than or equal to ``min_num``.
 
+.. code-block:: pycon
+
     >>> from django.forms import formset_factory
     >>> from myapp.forms import ArticleForm
     >>> ArticleFormSet = formset_factory(ArticleForm, min_num=3, validate_min=True)
     >>> data = {
-    ...     'form-TOTAL_FORMS': '2',
-    ...     'form-INITIAL_FORMS': '0',
-    ...     'form-0-title': 'Test',
-    ...     'form-0-pub_date': '1904-06-16',
-    ...     'form-1-title': 'Test 2',
-    ...     'form-1-pub_date': '1912-06-23',
+    ...     "form-TOTAL_FORMS": "2",
+    ...     "form-INITIAL_FORMS": "0",
+    ...     "form-0-title": "Test",
+    ...     "form-0-pub_date": "1904-06-16",
+    ...     "form-1-title": "Test 2",
+    ...     "form-1-pub_date": "1912-06-23",
     ... }
     >>> formset = ArticleFormSet(data)
     >>> formset.is_valid()
@@ -570,14 +571,12 @@ happen when the user changes these values:
     ...         {"title": "Article #2", "pub_date": datetime.date(2008, 5, 11)},
     ...     ],
     ... )
-    >>> formset.is_valid()
-    True
     >>> for form in formset.ordered_forms:
     ...     print(form.cleaned_data)
     ...
-    {'pub_date': datetime.date(2008, 5, 1), 'ORDER': 0, 'title': 'Article #3'}
-    {'pub_date': datetime.date(2008, 5, 11), 'ORDER': 1, 'title': 'Article #2'}
-    {'pub_date': datetime.date(2008, 5, 10), 'ORDER': 2, 'title': 'Article #1'}
+    {'title': 'Article #3', 'pub_date': datetime.date(2008, 5, 1), 'ORDER': 0}
+    {'title': 'Article #2', 'pub_date': datetime.date(2008, 5, 11), 'ORDER': 1}
+    {'title': 'Article #1', 'pub_date': datetime.date(2008, 5, 10), 'ORDER': 2}
 
 :class:`~django.forms.formsets.BaseFormSet` also provides an
 :attr:`~django.forms.formsets.BaseFormSet.ordering_widget` attribute and
@@ -689,7 +688,7 @@ delete fields you can access them with ``deleted_forms``:
     ...     ],
     ... )
     >>> [form.cleaned_data for form in formset.deleted_forms]
-    [{'DELETE': True, 'pub_date': datetime.date(2008, 5, 10), 'title': 'Article #1'}]
+    [{'title': 'Article #1', 'pub_date': datetime.date(2008, 5, 10), 'DELETE': True}]
 
 If you are using a :class:`ModelFormSet<django.forms.models.BaseModelFormSet>`,
 model instances for deleted forms will be deleted when you call
@@ -1004,10 +1003,11 @@ deal with the management form:
 The above ends up calling the :meth:`BaseFormSet.render` method on the formset
 class. This renders the formset using the template specified by the
 :attr:`~BaseFormSet.template_name` attribute. Similar to forms, by default the
-formset will be rendered ``as_table``, with other helper methods of ``as_p``
-and ``as_ul`` being available. The rendering of the formset can be customized
-by specifying the ``template_name`` attribute, or more generally by
-:ref:`overriding the default template <overriding-built-in-formset-templates>`.
+formset will be rendered ``as_div``, with other helper methods of ``as_p``,
+``as_ul``, and ``as_table`` being available. The rendering of the formset can
+be customized by specifying the ``template_name`` attribute, or more generally
+by :ref:`overriding the default template
+<overriding-built-in-formset-templates>`.
 
 .. _manually-rendered-can-delete-and-can-order:
 
