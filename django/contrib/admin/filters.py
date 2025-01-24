@@ -5,8 +5,10 @@ Filters are specified in models with the "list_filter" option.
 Each filter subclass knows how to display a filter for a field that passes a
 certain test -- e.g. being a DateField or ForeignKey.
 """
+
 import datetime
 
+from django.contrib.admin.exceptions import NotRegistered
 from django.contrib.admin.options import IncorrectLookupParameters
 from django.contrib.admin.utils import (
     build_q_object_from_lookup_parameters,
@@ -138,7 +140,7 @@ class SimpleListFilter(FacetsMixin, ListFilter):
             if lookup_qs is not None:
                 counts[f"{i}__c"] = models.Count(
                     pk_attname,
-                    filter=lookup_qs.query.where,
+                    filter=models.Q(pk__in=lookup_qs),
                 )
         self.used_parameters[self.parameter_name] = original_value
         return counts
@@ -257,10 +259,14 @@ class RelatedFieldListFilter(FieldListFilter):
         """
         Return the model admin's ordering for related field, if provided.
         """
-        related_admin = model_admin.admin_site._registry.get(field.remote_field.model)
-        if related_admin is not None:
+        try:
+            related_admin = model_admin.admin_site.get_model_admin(
+                field.remote_field.model
+            )
+        except NotRegistered:
+            return ()
+        else:
             return related_admin.get_ordering(request)
-        return ()
 
     def field_choices(self, field, request, model_admin):
         ordering = self.field_admin_ordering(field, request, model_admin)

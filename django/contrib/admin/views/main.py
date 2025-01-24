@@ -1,4 +1,3 @@
-import warnings
 from datetime import datetime, timedelta
 
 from django import forms
@@ -29,12 +28,11 @@ from django.core.exceptions import (
     SuspiciousOperation,
 )
 from django.core.paginator import InvalidPage
-from django.db.models import Exists, F, Field, ManyToOneRel, OrderBy, OuterRef
+from django.db.models import F, Field, ManyToOneRel, OrderBy
+from django.db.models.constants import LOOKUP_SEP
 from django.db.models.expressions import Combinable
 from django.urls import reverse
-from django.utils.deprecation import RemovedInDjango60Warning
 from django.utils.http import urlencode
-from django.utils.inspect import func_supports_parameter
 from django.utils.timezone import make_aware
 from django.utils.translation import gettext
 
@@ -177,19 +175,9 @@ class ChangeList:
         may_have_duplicates = False
         has_active_filters = False
 
-        supports_request = func_supports_parameter(
-            self.model_admin.lookup_allowed, "request"
-        )
-        if not supports_request:
-            warnings.warn(
-                f"`request` must be added to the signature of "
-                f"{self.model_admin.__class__.__qualname__}.lookup_allowed().",
-                RemovedInDjango60Warning,
-            )
         for key, value_list in lookup_params.items():
             for value in value_list:
-                params = (key, value, request) if supports_request else (key, value)
-                if not self.model_admin.lookup_allowed(*params):
+                if not self.model_admin.lookup_allowed(key, value, request):
                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
 
         filter_specs = []
@@ -356,9 +344,9 @@ class ChangeList:
         """
         Return the proper model field name corresponding to the given
         field_name to use for ordering. field_name may either be the name of a
-        proper model field or the name of a method (on the admin or model) or a
-        callable with the 'admin_order_field' attribute. Return None if no
-        proper model field name can be matched.
+        proper model field, possibly across relations, or the name of a method
+        (on the admin or model) or a callable with the 'admin_order_field'
+        attribute. Return None if no proper model field name can be matched.
         """
         try:
             field = self.lookup_opts.get_field(field_name)
@@ -371,7 +359,12 @@ class ChangeList:
             elif hasattr(self.model_admin, field_name):
                 attr = getattr(self.model_admin, field_name)
             else:
-                attr = getattr(self.model, field_name)
+                try:
+                    attr = getattr(self.model, field_name)
+                except AttributeError:
+                    if LOOKUP_SEP in field_name:
+                        return field_name
+                    raise
             if isinstance(attr, property) and hasattr(attr, "fget"):
                 attr = attr.fget
             return getattr(attr, "admin_order_field", None)
@@ -389,7 +382,7 @@ class ChangeList:
         ordering = list(
             self.model_admin.get_ordering(request) or self._get_default_ordering()
         )
-        if ORDER_VAR in params:
+        if params.get(ORDER_VAR):
             # Clear ordering and used params
             ordering = []
             order_params = params[ORDER_VAR].split(".")
@@ -566,6 +559,13 @@ class ChangeList:
             # ValueError, ValidationError, or ?.
             raise IncorrectLookupParameters(e)
 
+        if not qs.query.select_related:
+            qs = self.apply_select_related(qs)
+
+        # Set ordering.
+        ordering = self.get_ordering(request, qs)
+        qs = qs.order_by(*ordering)
+
         # Apply search results
         qs, search_may_have_duplicates = self.model_admin.get_search_results(
             request,
@@ -580,17 +580,9 @@ class ChangeList:
         )
         # Remove duplicates from results, if necessary
         if filters_may_have_duplicates | search_may_have_duplicates:
-            qs = qs.filter(pk=OuterRef("pk"))
-            qs = self.root_queryset.filter(Exists(qs))
-
-        # Set ordering.
-        ordering = self.get_ordering(request, qs)
-        qs = qs.order_by(*ordering)
-
-        if not qs.query.select_related:
-            qs = self.apply_select_related(qs)
-
-        return qs
+            return qs.distinct()
+        else:
+            return qs
 
     def apply_select_related(self, qs):
         if self.list_select_related is True:
@@ -613,7 +605,7 @@ class ChangeList:
             else:
                 if isinstance(field.remote_field, ManyToOneRel):
                     # <FK>_id field names don't require a join.
-                    if field_name != field.get_attname():
+                    if field_name != field.attname:
                         return True
         return False
 

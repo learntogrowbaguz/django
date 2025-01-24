@@ -76,21 +76,29 @@ corruption.
 Decorators
 ----------
 
-.. versionadded:: 5.0
-
 The following decorators can be used with both synchronous and asynchronous
 view functions:
 
 * :func:`~django.views.decorators.cache.cache_control`
 * :func:`~django.views.decorators.cache.never_cache`
 * :func:`~django.views.decorators.common.no_append_slash`
+* :func:`~django.views.decorators.csrf.csrf_exempt`
+* :func:`~django.views.decorators.csrf.csrf_protect`
+* :func:`~django.views.decorators.csrf.ensure_csrf_cookie`
+* :func:`~django.views.decorators.csrf.requires_csrf_token`
+* :func:`~django.views.decorators.debug.sensitive_variables`
+* :func:`~django.views.decorators.debug.sensitive_post_parameters`
+* :func:`~django.views.decorators.gzip.gzip_page`
 * :func:`~django.views.decorators.http.condition`
+* ``conditional_page()``
 * :func:`~django.views.decorators.http.etag`
 * :func:`~django.views.decorators.http.last_modified`
 * :func:`~django.views.decorators.http.require_http_methods`
 * :func:`~django.views.decorators.http.require_GET`
 * :func:`~django.views.decorators.http.require_POST`
 * :func:`~django.views.decorators.http.require_safe`
+* :func:`~django.views.decorators.vary.vary_on_cookie`
+* :func:`~django.views.decorators.vary.vary_on_headers`
 * ``xframe_options_deny()``
 * ``xframe_options_sameorigin()``
 * ``xframe_options_exempt()``
@@ -101,13 +109,11 @@ For example::
 
 
     @never_cache
-    def my_sync_view(request):
-        ...
+    def my_sync_view(request): ...
 
 
     @never_cache
-    async def my_async_view(request):
-        ...
+    async def my_async_view(request): ...
 
 Queries & the ORM
 -----------------
@@ -139,10 +145,6 @@ Django also supports some asynchronous model methods that use the database::
 Transactions do not yet work in async mode. If you have a piece of code that
 needs transactions behavior, we recommend you write that piece as a single
 synchronous function and call it using :func:`sync_to_async`.
-
-.. versionchanged:: 4.2
-
-    Asynchronous model and related manager interfaces were added.
 
 .. _async_performance:
 
@@ -177,8 +179,6 @@ mode if you have asynchronous code in your project.
 Handling disconnects
 --------------------
 
-.. versionadded:: 5.0
-
 For long-lived requests, a client may disconnect before the view returns a
 response. In this case, an ``asyncio.CancelledError`` will be raised in the
 view. You can catch this error and handle it if you need to perform any
@@ -191,6 +191,9 @@ cleanup::
         except asyncio.CancelledError:
             # Handle disconnect
             raise
+
+You can also :ref:`handle client disconnects in streaming responses
+<request-response-streaming-disconnect>`.
 
 .. _async-safety:
 
@@ -285,16 +288,14 @@ as either a direct wrapper or a decorator::
     from asgiref.sync import async_to_sync
 
 
-    async def get_data():
-        ...
+    async def get_data(): ...
 
 
     sync_get_data = async_to_sync(get_data)
 
 
     @async_to_sync
-    async def get_other_data():
-        ...
+    async def get_other_data(): ...
 
 The async function is run in the event loop for the current thread, if one is
 present. If there is no current event loop, a new event loop is spun up
@@ -325,8 +326,7 @@ as either a direct wrapper or a decorator::
 
 
     @sync_to_async
-    def sync_function():
-        ...
+    def sync_function(): ...
 
 Threadlocals and contextvars values are preserved across the boundary in both
 directions.
@@ -392,17 +392,3 @@ trigger the thread safety checks:
 Rather, you should encapsulate all database access within a helper function
 that can be called with ``sync_to_async()`` without relying on the connection
 object in the calling code.
-
-Use with exception reporting filters
-------------------------------------
-
-.. warning::
-
-    Due to the machinery needed to cross the sync/async boundary,
-    ``sync_to_async()`` and ``async_to_sync()`` are **not** compatible with
-    :func:`~django.views.decorators.debug.sensitive_variables`, used to mask
-    local variables from exception reports.
-
-    If using these adapters with sensitive variables, ensure to audit exception
-    reporting, and consider implementing a :ref:`custom filter
-    <custom-error-reports>` if necessary.

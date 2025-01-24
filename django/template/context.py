@@ -31,11 +31,15 @@ class BaseContext:
     def _reset_dicts(self, value=None):
         builtins = {"True": True, "False": False, "None": None}
         self.dicts = [builtins]
-        if value is not None:
+        if isinstance(value, BaseContext):
+            self.dicts += value.dicts[1:]
+        elif value is not None:
             self.dicts.append(value)
 
     def __copy__(self):
-        duplicate = copy(super())
+        duplicate = BaseContext()
+        duplicate.__class__ = self.__class__
+        duplicate.__dict__ = copy(self.__dict__)
         duplicate.dicts = self.dicts[:]
         return duplicate
 

@@ -12,8 +12,8 @@ This document contains all the API references of :class:`Field` including the
 
 .. seealso::
 
-    If the built-in fields don't do the trick, you can try `django-localflavor
-    <https://github.com/django/django-localflavor>`_ (`documentation
+    If the built-in fields don't do the trick, you can try
+    :pypi:`django-localflavor` (`documentation
     <https://django-localflavor.readthedocs.io/>`_), which contains assorted
     pieces of code that are useful for particular countries and cultures.
 
@@ -22,9 +22,9 @@ This document contains all the API references of :class:`Field` including the
 
 .. note::
 
-    Technically, these models are defined in :mod:`django.db.models.fields`, but
-    for convenience they're imported into :mod:`django.db.models`; the standard
-    convention is to use ``from django.db import models`` and refer to fields as
+    Fields are defined in :mod:`django.db.models.fields`, but for convenience
+    they're imported into :mod:`django.db.models`. The standard convention is
+    to use ``from django.db import models`` and refer to fields as
     ``models.<Foo>Field``.
 
 .. _common-model-field-options:
@@ -43,13 +43,15 @@ If ``True``, Django will store empty values as ``NULL`` in the database. Default
 is ``False``.
 
 Avoid using :attr:`~Field.null` on string-based fields such as
-:class:`CharField` and :class:`TextField`. If a string-based field has
-``null=True``, that means it has two possible values for "no data": ``NULL``,
-and the empty string. In most cases, it's redundant to have two possible values
-for "no data;" the Django convention is to use the empty string, not
-``NULL``. One exception is when a :class:`CharField` has both ``unique=True``
-and ``blank=True`` set. In this situation, ``null=True`` is required to avoid
-unique constraint violations when saving multiple objects with blank values.
+:class:`CharField` and :class:`TextField`. The Django convention is to use an
+empty string, not ``NULL``, as the "no data" state for string-based fields. If a
+string-based field has ``null=False``, empty strings can still be saved for "no
+data". If a string-based field has ``null=True``, that means it has two possible
+values for "no data": ``NULL``, and the empty string. In most cases, it's
+redundant to have two possible values for "no data". One exception is when a
+:class:`CharField` has both ``unique=True`` and ``blank=True`` set. In this
+situation, ``null=True`` is required to avoid unique constraint violations when
+saving multiple objects with blank values.
 
 For both string-based and non-string-based fields, you will also need to
 set ``blank=True`` if you wish to permit empty values in forms, as the
@@ -86,14 +88,26 @@ If a field has ``blank=False``, the field will be required.
 
 .. attribute:: Field.choices
 
-A :term:`sequence` consisting itself of iterables of exactly two items (e.g.
-``[(A, B), (A, B) ...]``) to use as choices for this field. If choices are
-given, they're enforced by :ref:`model validation <validating-objects>` and the
-default form widget will be a select box with these choices instead of the
-standard text field.
+A mapping or iterable in the format described below to use as choices for this
+field. If choices are given, they're enforced by
+:ref:`model validation <validating-objects>` and the default form widget will
+be a select box with these choices instead of the standard text field.
 
-The first element in each tuple is the actual value to be set on the model,
-and the second element is the human-readable name. For example::
+If a mapping is given, the key element is the actual value to be set on the
+model, and the second element is the human readable name. For example::
+
+    YEAR_IN_SCHOOL_CHOICES = {
+        "FR": "Freshman",
+        "SO": "Sophomore",
+        "JR": "Junior",
+        "SR": "Senior",
+        "GR": "Graduate",
+    }
+
+You can also pass a :term:`sequence` consisting itself of iterables of exactly
+two items (e.g. ``[(A1, B1), (A2, B2), …]``). The first element in each tuple
+is the actual value to be set on the model, and the second element is the
+human-readable name. For example::
 
     YEAR_IN_SCHOOL_CHOICES = [
         ("FR", "Freshman"),
@@ -102,6 +116,29 @@ and the second element is the human-readable name. For example::
         ("SR", "Senior"),
         ("GR", "Graduate"),
     ]
+
+``choices`` can also be defined as a callable that expects no arguments and
+returns any of the formats described above. For example::
+
+    def get_currencies():
+        return {i: i for i in settings.CURRENCIES}
+
+
+    class Expense(models.Model):
+        amount = models.DecimalField(max_digits=10, decimal_places=2)
+        currency = models.CharField(max_length=3, choices=get_currencies)
+
+Passing a callable for ``choices`` can be particularly handy when, for example,
+the choices are:
+
+* the result of I/O-bound operations (which could potentially be cached), such
+  as querying a table in the same or an external database, or accessing the
+  choices from a static file.
+
+* a list that is mostly stable but could vary from time to time or from
+  project to project. Examples in this category are using third-party apps that
+  provide a well-known inventory of values, such as currencies, countries,
+  languages, time zones, etc.
 
 Generally, it's best to define choices inside a model class, and to
 define a suitably-named constant for each value::
@@ -115,13 +152,13 @@ define a suitably-named constant for each value::
         JUNIOR = "JR"
         SENIOR = "SR"
         GRADUATE = "GR"
-        YEAR_IN_SCHOOL_CHOICES = [
-            (FRESHMAN, "Freshman"),
-            (SOPHOMORE, "Sophomore"),
-            (JUNIOR, "Junior"),
-            (SENIOR, "Senior"),
-            (GRADUATE, "Graduate"),
-        ]
+        YEAR_IN_SCHOOL_CHOICES = {
+            FRESHMAN: "Freshman",
+            SOPHOMORE: "Sophomore",
+            JUNIOR: "Junior",
+            SENIOR: "Senior",
+            GRADUATE: "Graduate",
+        }
         year_in_school = models.CharField(
             max_length=2,
             choices=YEAR_IN_SCHOOL_CHOICES,
@@ -142,6 +179,25 @@ will work anywhere that the ``Student`` model has been imported).
 You can also collect your available choices into named groups that can
 be used for organizational purposes::
 
+    MEDIA_CHOICES = {
+        "Audio": {
+            "vinyl": "Vinyl",
+            "cd": "CD",
+        },
+        "Video": {
+            "vhs": "VHS Tape",
+            "dvd": "DVD",
+        },
+        "unknown": "Unknown",
+    }
+
+The key of the mapping is the name to apply to the group and the value is the
+choices inside that group, consisting of the field value and a human-readable
+name for an option. Grouped options may be combined with ungrouped options
+within a single mapping (such as the ``"unknown"`` option in this example).
+
+You can also use a sequence, e.g. a list of 2-tuples::
+
     MEDIA_CHOICES = [
         (
             "Audio",
@@ -160,17 +216,6 @@ be used for organizational purposes::
         ("unknown", "Unknown"),
     ]
 
-The first element in each tuple is the name to apply to the group. The
-second element is an iterable of 2-tuples, with each 2-tuple containing
-a value and a human-readable name for an option. Grouped options may be
-combined with ungrouped options within a single list (such as the
-``'unknown'`` option in this example).
-
-For each model field that has :attr:`~Field.choices` set, Django will add a
-method to retrieve the human-readable name for the field's current value. See
-:meth:`~django.db.models.Model.get_FOO_display` in the database API
-documentation.
-
 Note that choices can be any sequence object -- not necessarily a list or
 tuple. This lets you construct choices dynamically. But if you find yourself
 hacking :attr:`~Field.choices` to be dynamic, you're probably better off using
@@ -179,6 +224,12 @@ meant for static data that doesn't change much, if ever.
 
 .. note::
     A new migration is created each time the order of ``choices`` changes.
+
+For each model field that has :attr:`~Field.choices` set, Django will normalize
+the choices to a list of 2-tuples and add a method to retrieve the
+human-readable name for the field's current value. See
+:meth:`~django.db.models.Model.get_FOO_display` in the database API
+documentation.
 
 .. _field-choices-blank-label:
 
@@ -319,10 +370,6 @@ There are some additional caveats to be aware of:
 
         __empty__ = _("(Unknown)")
 
-.. versionchanged:: 5.0
-
-    Support for using enumeration types directly in the ``choices`` was added.
-
 ``db_column``
 -------------
 
@@ -339,8 +386,6 @@ scenes.
 ``db_comment``
 --------------
 
-.. versionadded:: 4.2
-
 .. attribute:: Field.db_comment
 
 The comment on the database column to use for this field. It is useful for
@@ -353,8 +398,6 @@ looking at your Django code. For example::
 
 ``db_default``
 --------------
-
-.. versionadded:: 5.0
 
 .. attribute:: Field.db_default
 
@@ -382,6 +425,11 @@ If both ``db_default`` and :attr:`Field.default` are set, ``default`` will take
 precedence when creating instances in Python code. ``db_default`` will still be
 set at the database level and will be used when inserting rows outside of the
 ORM or when adding a new field in a migration.
+
+If a field has a ``db_default`` without a ``default`` set and no value is
+assigned to the field, a ``DatabaseDefault`` object is returned as the field
+value on unsaved model instances. The actual value for the field is determined
+by the database when the model instance is saved.
 
 ``db_index``
 ------------
@@ -449,7 +497,7 @@ The default value can also be set at the database level with
 .. attribute:: Field.editable
 
 If ``False``, the field will not be displayed in the admin or any other
-:class:`~django.forms.ModelForm`. They are also skipped during :ref:`model
+:class:`~django.forms.ModelForm`. It will also be skipped during :ref:`model
 validation <validating-objects>`. Default is ``True``.
 
 ``error_messages``
@@ -494,18 +542,20 @@ cross-site scripting attack.
 
 If ``True``, this field is the primary key for the model.
 
-If you don't specify ``primary_key=True`` for any field in your model, Django
-will automatically add a field to hold the primary key, so you don't need to
-set ``primary_key=True`` on any of your fields unless you want to override the
-default primary-key behavior. The type of auto-created primary key fields can
-be specified per app in :attr:`AppConfig.default_auto_field
-<django.apps.AppConfig.default_auto_field>` or globally in the
-:setting:`DEFAULT_AUTO_FIELD` setting. For more, see
+If you don't specify ``primary_key=True`` for any field in your model and have
+not defined a composite primary key, Django will automatically add a field to
+hold the primary key. So, you don't need to set ``primary_key=True`` on any of
+your fields unless you want to override the default primary-key behavior. The
+type of auto-created primary key fields can be specified per app in
+:attr:`AppConfig.default_auto_field <django.apps.AppConfig.default_auto_field>`
+or globally in the :setting:`DEFAULT_AUTO_FIELD` setting. For more, see
 :ref:`automatic-primary-key-fields`.
 
 ``primary_key=True`` implies :attr:`null=False <Field.null>` and
-:attr:`unique=True <Field.unique>`. Only one primary key is allowed on an
-object.
+:attr:`unique=True <Field.unique>`. Only one field per model can set
+``primary_key=True``. Composite primary keys must be defined using
+:class:`CompositePrimaryKey` instead of setting this flag to ``True`` for all
+fields to maintain this invariant.
 
 The primary key field is read-only. If you change the value of the primary
 key on an existing object and then save it, a new object will be created
@@ -513,6 +563,10 @@ alongside the old one.
 
 The primary key field is set to ``None`` when
 :meth:`deleting <django.db.models.Model.delete>` an object.
+
+.. versionchanged:: 5.2
+
+    The ``CompositePrimaryKey`` field was added.
 
 ``unique``
 ----------
@@ -659,6 +713,23 @@ or :class:`~django.forms.NullBooleanSelect` if :attr:`null=True <Field.null>`.
 The default value of ``BooleanField`` is ``None`` when :attr:`Field.default`
 isn't defined.
 
+``CompositePrimaryKey``
+-----------------------
+
+.. versionadded:: 5.2
+
+.. class:: CompositePrimaryKey(*field_names, **options)
+
+A virtual field used for defining a composite primary key.
+
+This field must be defined as the model's ``pk`` attribute. If present, Django
+will create the underlying model table with a composite primary key.
+
+The ``*field_names`` argument is a list of positional field names that compose
+the primary key.
+
+See :doc:`/topics/composite-primary-key` for more details.
+
 ``CharField``
 -------------
 
@@ -677,8 +748,8 @@ The default form widget for this field is a :class:`~django.forms.TextInput`.
     The maximum length (in characters) of the field. The ``max_length``
     is enforced at the database level and in Django's validation using
     :class:`~django.core.validators.MaxLengthValidator`. It's required for all
-    database backends included with Django except PostgreSQL, which supports
-    unlimited ``VARCHAR`` columns.
+    database backends included with Django except PostgreSQL and SQLite, which
+    supports unlimited ``VARCHAR`` columns.
 
     .. note::
 
@@ -687,9 +758,9 @@ The default form widget for this field is a :class:`~django.forms.TextInput`.
         ``max_length`` for some backends. Refer to the :doc:`database backend
         notes </ref/databases>` for details.
 
-    .. versionchanged:: 4.2
+    .. versionchanged:: 5.2
 
-        Support for unlimited ``VARCHAR`` columns was added on PostgreSQL.
+       Support for unlimited ``VARCHAR`` columns was added on SQLite.
 
 .. attribute:: CharField.db_collation
 
@@ -761,6 +832,15 @@ Any combination of these options will result in an error.
     instead of a ``DateField`` and deciding how to handle the conversion from
     datetime to date at display time.
 
+.. warning:: Always use :class:`DateField` with a ``datetime.date`` instance.
+
+    If you have a ``datetime.datetime`` instance, it's recommended to convert
+    it to a ``datetime.date`` first. If you don't, :class:`DateField` will
+    localize the ``datetime.datetime`` to the :ref:`default timezone
+    <default-current-time-zone>` and convert it to a ``datetime.date``
+    instance, removing its time component. This is true for both storage and
+    comparison.
+
 ``DateTimeField``
 -----------------
 
@@ -772,6 +852,16 @@ Takes the same extra arguments as :class:`DateField`.
 The default form widget for this field is a single
 :class:`~django.forms.DateTimeInput`. The admin uses two separate
 :class:`~django.forms.TextInput` widgets with JavaScript shortcuts.
+
+.. warning:: Always use :class:`DateTimeField` with a ``datetime.datetime``
+    instance.
+
+    If you have a ``datetime.date`` instance, it's recommended to convert it to
+    a ``datetime.datetime`` first. If you don't, :class:`DateTimeField` will
+    use midnight in the :ref:`default timezone <default-current-time-zone>` for
+    the time component. This is true for both storage and comparison. To
+    compare the date portion of a :class:`DateTimeField` with a
+    ``datetime.date`` instance, use the :lookup:`date` lookup.
 
 ``DecimalField``
 ----------------
@@ -1185,6 +1275,67 @@ when :attr:`~django.forms.Field.localize` is ``False`` or
     information on the difference between the two, see Python's documentation
     for the :mod:`decimal` module.
 
+``GeneratedField``
+------------------
+
+.. class:: GeneratedField(expression, output_field, db_persist=None, **kwargs)
+
+A field that is always computed based on other fields in the model. This field
+is managed and updated by the database itself. Uses the ``GENERATED ALWAYS``
+SQL syntax.
+
+There are two kinds of generated columns: stored and virtual. A stored
+generated column is computed when it is written (inserted or updated) and
+occupies storage as if it were a regular column. A virtual generated column
+occupies no storage and is computed when it is read. Thus, a virtual generated
+column is similar to a view and a stored generated column is similar to a
+materialized view.
+
+.. attribute:: GeneratedField.expression
+
+    An :class:`Expression` used by the database to automatically set the field
+    value each time the model is changed.
+
+    The expressions should be deterministic and only reference fields within
+    the model (in the same database table). Generated fields cannot reference
+    other generated fields. Database backends can impose further restrictions.
+
+.. attribute:: GeneratedField.output_field
+
+    A model field instance to define the field's data type.
+
+.. attribute:: GeneratedField.db_persist
+
+    Determines if the database column should occupy storage as if it were a
+    real column. If ``False``, the column acts as a virtual column and does
+    not occupy database storage space.
+
+    PostgreSQL only supports persisted columns. Oracle only supports virtual
+    columns.
+
+.. admonition:: Refresh the data
+
+    Since the database always computed the value, the object must be reloaded
+    to access the new value after :meth:`~Model.save()`, for example, by using
+    :meth:`~Model.refresh_from_db()`.
+
+.. admonition:: Database limitations
+
+    There are many database-specific restrictions on generated fields that
+    Django doesn't validate and the database may raise an error e.g. PostgreSQL
+    requires functions and operators referenced in a generated column to be
+    marked as ``IMMUTABLE``.
+
+    You should always check that ``expression`` is supported on your database.
+    Check out `MariaDB`_, `MySQL`_, `Oracle`_, `PostgreSQL`_, or `SQLite`_
+    docs.
+
+.. _MariaDB: https://mariadb.com/kb/en/generated-columns/#expression-support
+.. _MySQL: https://dev.mysql.com/doc/refman/en/create-table-generated-columns.html
+.. _Oracle: https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/CREATE-TABLE.html#GUID-F9CE0CC3-13AE-4744-A43C-EAC7A71AAAB6__BABIIGBD
+.. _PostgreSQL: https://www.postgresql.org/docs/current/ddl-generated-columns.html
+.. _SQLite: https://www.sqlite.org/gencol.html#limitations
+
 ``GenericIPAddressField``
 -------------------------
 
@@ -1232,17 +1383,15 @@ following optional arguments:
 
 .. attribute:: ImageField.height_field
 
-    Name of a model field which will be auto-populated with the height of the
-    image each time the model instance is saved.
+    Name of a model field which is auto-populated with the height of the image
+    each time an image object is set.
 
 .. attribute:: ImageField.width_field
 
-    Name of a model field which will be auto-populated with the width of the
-    image each time the model instance is saved.
+    Name of a model field which is auto-populated with the width of the image
+    each time an image object is set.
 
-Requires the `Pillow`_ library.
-
-.. _Pillow: https://pillow.readthedocs.io/en/latest/
+Requires the :pypi:`pillow` library.
 
 :class:`ImageField` instances are created in your database as ``varchar``
 columns with a default max length of 100 characters. As with other fields, you
@@ -1463,8 +1612,8 @@ Like all :class:`CharField` subclasses, :class:`URLField` takes the optional
 .. class:: UUIDField(**options)
 
 A field for storing universally unique identifiers. Uses Python's
-:class:`~python:uuid.UUID` class. When used on PostgreSQL, this stores in a
-``uuid`` datatype, otherwise in a ``char(32)``.
+:class:`~python:uuid.UUID` class. When used on PostgreSQL and MariaDB 10.7+,
+this stores in a ``uuid`` datatype, otherwise in a ``char(32)``.
 
 Universally unique identifiers are a good alternative to :class:`AutoField` for
 :attr:`~Field.primary_key`. The database will not generate the UUID for you, so
@@ -1481,12 +1630,15 @@ it is recommended to use :attr:`~Field.default`::
 Note that a callable (with the parentheses omitted) is passed to ``default``,
 not an instance of ``UUID``.
 
-.. admonition:: Lookups on PostgreSQL
+.. admonition:: Lookups on PostgreSQL and MariaDB 10.7+
 
     Using :lookup:`iexact`, :lookup:`contains`, :lookup:`icontains`,
     :lookup:`startswith`, :lookup:`istartswith`, :lookup:`endswith`, or
     :lookup:`iendswith` lookups on PostgreSQL don't work for values without
-    hyphens, because PostgreSQL stores them in a hyphenated uuid datatype type.
+    hyphens, because PostgreSQL and MariaDB 10.7+ store them in a hyphenated
+    uuid datatype type.
+
+.. _relationship-fields:
 
 Relationship fields
 ===================
@@ -1506,80 +1658,25 @@ Django also defines a set of fields that represent relations.
 .. class:: ForeignKey(to, on_delete, **options)
 
 A many-to-one relationship. Requires two positional arguments: the class to
-which the model is related and the :attr:`~ForeignKey.on_delete` option.
-
-.. _recursive-relationships:
-
-To create a recursive relationship -- an object that has a many-to-one
-relationship with itself -- use ``models.ForeignKey('self',
-on_delete=models.CASCADE)``.
-
-.. _lazy-relationships:
-
-If you need to create a relationship on a model that has not yet been defined,
-you can use the name of the model, rather than the model object itself::
+which the model is related and the :attr:`~ForeignKey.on_delete` option::
 
     from django.db import models
-
-
-    class Car(models.Model):
-        manufacturer = models.ForeignKey(
-            "Manufacturer",
-            on_delete=models.CASCADE,
-        )
-        # ...
 
 
     class Manufacturer(models.Model):
-        # ...
-        pass
+        name = models.TextField()
 
-Relationships defined this way on :ref:`abstract models
-<abstract-base-classes>` are resolved when the model is subclassed as a
-concrete model and are not relative to the abstract model's ``app_label``:
-
-.. code-block:: python
-    :caption: ``products/models.py``
-
-    from django.db import models
-
-
-    class AbstractCar(models.Model):
-        manufacturer = models.ForeignKey("Manufacturer", on_delete=models.CASCADE)
-
-        class Meta:
-            abstract = True
-
-.. code-block:: python
-    :caption: ``production/models.py``
-
-    from django.db import models
-    from products.models import AbstractCar
-
-
-    class Manufacturer(models.Model):
-        pass
-
-
-    class Car(AbstractCar):
-        pass
-
-
-    # Car.manufacturer will point to `production.Manufacturer` here.
-
-To refer to models defined in another application, you can explicitly specify
-a model with the full application label. For example, if the ``Manufacturer``
-model above is defined in another application called ``production``, you'd
-need to use::
 
     class Car(models.Model):
-        manufacturer = models.ForeignKey(
-            "production.Manufacturer",
-            on_delete=models.CASCADE,
-        )
+        manufacturer = models.ForeignKey(Manufacturer, on_delete=models.CASCADE)
 
-This sort of reference, called a lazy relationship, can be useful when
-resolving circular import dependencies between two applications.
+The first positional argument can be either a concrete model class or a
+:ref:`lazy reference <lazy-relationships>` to a model class.
+:ref:`Recursive relationships <recursive-relationships>`, where a model has a
+relationship with itself, are also supported.
+
+See :attr:`ForeignKey.on_delete` for details on the second positional
+argument.
 
 A database index is automatically created on the ``ForeignKey``. You can
 disable this by setting :attr:`~Field.db_index` to ``False``.  You may want to
@@ -1592,9 +1689,9 @@ Database Representation
 
 Behind the scenes, Django appends ``"_id"`` to the field name to create its
 database column name. In the above example, the database table for the ``Car``
-model will have a ``manufacturer_id`` column. (You can change this explicitly by
-specifying :attr:`~Field.db_column`) However, your code should never have to
-deal with the database column name, unless you write custom SQL. You'll always
+model will have a ``manufacturer_id`` column. You can change this explicitly by
+specifying :attr:`~Field.db_column`, however, your code should never have to
+deal with the database column name (unless you write custom SQL). You'll always
 deal with the field names of your model object.
 
 .. _foreign-key-arguments:
@@ -2144,6 +2241,120 @@ accepted by :class:`ForeignKey`, plus one extra argument:
 See :doc:`One-to-one relationships </topics/db/examples/one_to_one>` for usage
 examples of ``OneToOneField``.
 
+.. _lazy-relationships:
+
+Lazy relationships
+------------------
+
+Lazy relationships allow referencing models by their names (as strings) or
+creating recursive relationships. Strings can be used as the first argument in
+any relationship field to reference models lazily. A lazy reference can be
+either :ref:`recursive <recursive-relationships>`,
+:ref:`relative <relative-relationships>` or
+:ref:`absolute <absolute-relationships>`.
+
+.. _recursive-relationships:
+
+Recursive
+~~~~~~~~~
+
+To define a relationship where a model references itself, use ``"self"`` as the
+first argument of the relationship field::
+
+    from django.db import models
+
+
+    class Manufacturer(models.Model):
+        name = models.TextField()
+        suppliers = models.ManyToManyField("self", symmetrical=False)
+
+
+When used in an :ref:`abstract model <abstract-base-classes>`, the recursive
+relationship resolves such that each concrete subclass references itself.
+
+.. _relative-relationships:
+
+Relative
+~~~~~~~~
+
+When a relationship needs to be created with a model that has not been defined
+yet, it can be referenced by its name rather than the model object itself::
+
+    from django.db import models
+
+
+    class Car(models.Model):
+        manufacturer = models.ForeignKey(
+            "Manufacturer",
+            on_delete=models.CASCADE,
+        )
+
+
+    class Manufacturer(models.Model):
+        name = models.TextField()
+        suppliers = models.ManyToManyField("self", symmetrical=False)
+
+Relationships defined this way on :ref:`abstract models
+<abstract-base-classes>` are resolved when the model is subclassed as a
+concrete model and are not relative to the abstract model's ``app_label``:
+
+.. code-block:: python
+    :caption: ``products/models.py``
+
+    from django.db import models
+
+
+    class AbstractCar(models.Model):
+        manufacturer = models.ForeignKey("Manufacturer", on_delete=models.CASCADE)
+
+        class Meta:
+            abstract = True
+
+.. code-block:: python
+    :caption: ``production/models.py``
+
+    from django.db import models
+    from products.models import AbstractCar
+
+
+    class Manufacturer(models.Model):
+        name = models.TextField()
+
+
+    class Car(AbstractCar):
+        pass
+
+In this example, the ``Car.manufacturer`` relationship will resolve to
+``production.Manufacturer``, as it points to the concrete model defined
+within the ``production/models.py`` file.
+
+.. admonition:: Reusable models with relative references
+
+    Relative references allow the creation of reusable abstract models with
+    relationships that can resolve to different implementations of the
+    referenced models in various subclasses across different applications.
+
+.. _absolute-relationships:
+
+Absolute
+~~~~~~~~
+
+Absolute references specify a model using its ``app_label`` and class name,
+allowing for model references across different applications. This type of lazy
+relationship can also help resolve circular imports.
+
+For example, if the ``Manufacturer`` model is defined in another application
+called ``thirdpartyapp``, it can be referenced as::
+
+    class Car(models.Model):
+        manufacturer = models.ForeignKey(
+            "thirdpartyapp.Manufacturer",
+            on_delete=models.CASCADE,
+        )
+
+Absolute references always point to the same model, even when used in an
+:ref:`abstract model <abstract-base-classes>`.
+
 Field API reference
 ===================
 
@@ -2323,6 +2534,9 @@ Field API reference
         Returns the default :class:`django.forms.Field` of this field for
         :class:`~django.forms.ModelForm`.
 
+        If :meth:`~Field.formfield` is overridden to return ``None``, this field
+        is excluded from the :class:`~django.forms.ModelForm`.
+
         By default, if both ``form_class`` and ``choices_form_class`` are
         ``None``, it uses :class:`~django.forms.CharField`. If the field has
         :attr:`~django.db.models.Field.choices` and ``choices_form_class``
@@ -2349,11 +2563,6 @@ Registering and fetching lookups
 ``Field`` implements the :ref:`lookup registration API <lookup-registration-api>`.
 The API can be used to customize which lookups are available for a field class
 and its instances, and how lookups are fetched from a field.
-
-.. versionchanged:: 4.2
-
-    Support for registering lookups on :class:`~django.db.models.Field`
-    instances was added.
 
 .. _model-field-attributes:
 
@@ -2383,18 +2592,11 @@ Attributes for fields
 
 .. attribute:: Field.hidden
 
-    Boolean flag that indicates if a field is used to back another non-hidden
-    field's functionality (e.g. the ``content_type`` and ``object_id`` fields
-    that make up a ``GenericForeignKey``). The ``hidden`` flag is used to
-    distinguish what constitutes the public subset of fields on the model from
-    all the fields on the model.
-
-    .. note::
-
-        :meth:`Options.get_fields()
-        <django.db.models.options.Options.get_fields()>`
-        excludes hidden fields by default. Pass in ``include_hidden=True`` to
-        return hidden fields in the results.
+    Boolean flag that indicates if a field is hidden and should not be returned
+    by :meth:`Options.get_fields()
+    <django.db.models.options.Options.get_fields>` by default. An example is
+    the reverse field for a :class:`~django.db.models.ForeignKey` with a
+    ``related_name`` that starts with ``'+'``.
 
 .. attribute:: Field.is_relation
 

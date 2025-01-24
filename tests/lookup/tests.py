@@ -24,6 +24,7 @@ from django.db.models.lookups import (
     Exact,
     GreaterThan,
     GreaterThanOrEqual,
+    In,
     IsNull,
     LessThan,
     LessThanOrEqual,
@@ -326,6 +327,13 @@ class LookupTests(TestCase):
         msg = "Cannot use 'limit' or 'offset' with in_bulk()."
         with self.assertRaisesMessage(TypeError, msg):
             Article.objects.all()[0:5].in_bulk([self.a1.id, self.a2.id])
+
+    def test_in_bulk_not_model_iterable(self):
+        msg = "in_bulk() cannot be used with values() or values_list()."
+        with self.assertRaisesMessage(TypeError, msg):
+            Author.objects.values().in_bulk()
+        with self.assertRaisesMessage(TypeError, msg):
+            Author.objects.values_list().in_bulk()
 
     def test_values(self):
         # values() returns a list of dictionaries instead of object instances --
@@ -812,6 +820,34 @@ class LookupTests(TestCase):
         ):
             Article.objects.filter(pub_date__gobbledygook="blahblah")
 
+        with self.assertRaisesMessage(
+            FieldError,
+            "Unsupported lookup 'gt__foo' for DateTimeField or join on the field "
+            "not permitted, perhaps you meant gt or gte?",
+        ):
+            Article.objects.filter(pub_date__gt__foo="blahblah")
+
+        with self.assertRaisesMessage(
+            FieldError,
+            "Unsupported lookup 'gt__' for DateTimeField or join on the field "
+            "not permitted, perhaps you meant gt or gte?",
+        ):
+            Article.objects.filter(pub_date__gt__="blahblah")
+
+        with self.assertRaisesMessage(
+            FieldError,
+            "Unsupported lookup 'gt__lt' for DateTimeField or join on the field "
+            "not permitted, perhaps you meant gt or gte?",
+        ):
+            Article.objects.filter(pub_date__gt__lt="blahblah")
+
+        with self.assertRaisesMessage(
+            FieldError,
+            "Unsupported lookup 'gt__lt__foo' for DateTimeField or join"
+            " on the field not permitted, perhaps you meant gt or gte?",
+        ):
+            Article.objects.filter(pub_date__gt__lt__foo="blahblah")
+
     def test_unsupported_lookups_custom_lookups(self):
         slug_field = Article._meta.get_field("slug")
         msg = (
@@ -825,7 +861,7 @@ class LookupTests(TestCase):
     def test_relation_nested_lookup_error(self):
         # An invalid nested lookup on a related field raises a useful error.
         msg = (
-            "Unsupported lookup 'editor' for ForeignKey or join on the field not "
+            "Unsupported lookup 'editor__name' for ForeignKey or join on the field not "
             "permitted."
         )
         with self.assertRaisesMessage(FieldError, msg):
@@ -1059,6 +1095,10 @@ class LookupTests(TestCase):
         )
         with self.assertRaisesMessage(FieldError, msg):
             Article.objects.filter(headline__blahblah=99)
+        msg = (
+            "Unsupported lookup 'blahblah__exact' for CharField or join "
+            "on the field not permitted."
+        )
         with self.assertRaisesMessage(FieldError, msg):
             Article.objects.filter(headline__blahblah__exact=99)
         msg = (
@@ -1337,6 +1377,16 @@ class LookupTests(TestCase):
                 with self.assertRaisesMessage(ValueError, msg):
                     qs.exists()
 
+    def test_isnull_textfield(self):
+        self.assertSequenceEqual(
+            Author.objects.filter(bio__isnull=True),
+            [self.au2],
+        )
+        self.assertSequenceEqual(
+            Author.objects.filter(bio__isnull=False),
+            [self.au1],
+        )
+
     def test_lookup_rhs(self):
         product = Product.objects.create(name="GME", qty_target=5000)
         stock_1 = Stock.objects.create(product=product, short=True, qty_available=180)
@@ -1355,6 +1405,12 @@ class LookupTests(TestCase):
             ),
             [stock_1, stock_2],
         )
+
+    def test_lookup_direct_value_rhs_unwrapped(self):
+        with self.assertNumQueries(1) as ctx:
+            self.assertIs(Author.objects.filter(GreaterThan(2, 1)).exists(), True)
+        # Direct values on RHS are not wrapped.
+        self.assertIn("2 > 1", ctx.captured_queries[0]["sql"])
 
 
 class LookupQueryingTests(TestCase):
@@ -1456,6 +1512,25 @@ class LookupQueryingTests(TestCase):
             [self.s1, self.s3],
         )
 
+    def test_in_lookup_in_filter(self):
+        test_cases = [
+            ((), ()),
+            ((1942,), (self.s1,)),
+            ((1842,), (self.s2,)),
+            ((2042,), (self.s3,)),
+            ((1942, 1842), (self.s1, self.s2)),
+            ((1942, 2042), (self.s1, self.s3)),
+            ((1842, 2042), (self.s2, self.s3)),
+            ((1942, 1942, 1942), (self.s1,)),
+            ((1942, 2042, 1842), (self.s1, self.s2, self.s3)),
+        ]
+
+        for years, seasons in test_cases:
+            with self.subTest(years=years, seasons=seasons):
+                self.assertSequenceEqual(
+                    Season.objects.filter(In(F("year"), years)).order_by("pk"), seasons
+                )
+
     def test_filter_lookup_lhs(self):
         qs = Season.objects.annotate(before_20=LessThan(F("year"), 2000)).filter(
             before_20=LessThan(F("year"), 1900),
@@ -1512,7 +1587,6 @@ class LookupQueryingTests(TestCase):
         qs = Season.objects.order_by(LessThan(F("year"), 1910), F("year"))
         self.assertSequenceEqual(qs, [self.s1, self.s3, self.s2])
 
-    @skipUnlessDBFeature("supports_boolean_expr_in_select_clause")
     def test_aggregate_combined_lookup(self):
         expression = Cast(GreaterThan(F("year"), 1900), models.IntegerField())
         qs = Season.objects.aggregate(modern=models.Sum(expression))

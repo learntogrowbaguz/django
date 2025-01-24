@@ -7,7 +7,7 @@ Form fields
 
 .. currentmodule:: django.forms
 
-.. class:: Field(**kwargs)
+.. class:: Field
 
 When you create a ``Form`` class, the most important part is defining the
 fields of the form. Each field has custom validation logic, along with a few
@@ -65,8 +65,6 @@ an empty value -- either ``None`` or the empty string (``""``) -- then
     Traceback (most recent call last):
     ...
     ValidationError: ['This field is required.']
-    >>> f.clean(" ")
-    ' '
     >>> f.clean(0)
     '0'
     >>> f.clean(True)
@@ -112,7 +110,7 @@ validation may not be correct when adding and deleting formsets.
 The ``label`` argument lets you specify the "human-friendly" label for this
 field. This is used when the ``Field`` is displayed in a ``Form``.
 
-As explained in "Outputting forms as HTML" above, the default label for a
+As explained in :ref:`ref-forms-api-outputting-html`, the default label for a
 ``Field`` is generated from the field name by converting all underscores to
 spaces and upper-casing the first letter. Specify ``label`` if that default
 behavior doesn't result in an adequate label.
@@ -173,13 +171,13 @@ field is initialized to a particular value. For example:
     >>> from django import forms
     >>> class CommentForm(forms.Form):
     ...     name = forms.CharField(initial="Your name")
-    ...     url = forms.URLField(initial="http://")
+    ...     url = forms.URLField(initial="https://")
     ...     comment = forms.CharField()
     ...
     >>> f = CommentForm(auto_id=False)
     >>> print(f)
     <div>Name:<input type="text" name="name" value="Your name" required></div>
-    <div>Url:<input type="url" name="url" value="http://" required></div>
+    <div>Url:<input type="url" name="url" value="https://" required></div>
     <div>Comment:<input type="text" name="comment" required></div>
 
 You may be thinking, why not just pass a dictionary of the initial values as
@@ -193,12 +191,20 @@ and the HTML output will include any validation errors:
     ...     url = forms.URLField()
     ...     comment = forms.CharField()
     ...
-    >>> default_data = {"name": "Your name", "url": "http://"}
+    >>> default_data = {"name": "Your name", "url": "https://"}
     >>> f = CommentForm(default_data, auto_id=False)
     >>> print(f)
-    <div>Name:<input type="text" name="name" value="Your name" required></div>
-    <div>Url:<ul class="errorlist"><li>Enter a valid URL.</li></ul><input type="url" name="url" value="http://" required></div>
-    <div>Comment:<ul class="errorlist"><li>This field is required.</li></ul><input type="text" name="comment" required></div>
+    <div>Name:
+      <input type="text" name="name" value="Your name" required>
+    </div>
+    <div>Url:
+      <ul class="errorlist"><li>Enter a valid URL.</li></ul>
+      <input type="url" name="url" value="https://" required aria-invalid="true">
+    </div>
+    <div>Comment:
+      <ul class="errorlist"><li>This field is required.</li></ul>
+      <input type="text" name="comment" required aria-invalid="true">
+    </div>
 
 This is why ``initial`` values are only displayed for unbound forms. For bound
 forms, the HTML output will use the bound data.
@@ -211,14 +217,14 @@ validation if a particular field's value is not given. ``initial`` values are
 
     >>> class CommentForm(forms.Form):
     ...     name = forms.CharField(initial="Your name")
-    ...     url = forms.URLField(initial="http://")
+    ...     url = forms.URLField(initial="https://")
     ...     comment = forms.CharField()
     ...
     >>> data = {"name": "", "url": "", "comment": "Foo"}
     >>> f = CommentForm(data)
     >>> f.is_valid()
     False
-    # The form does *not* fall back to using the initial values.
+    # The form does *not* fallback to using the initial values.
     >>> f.errors
     {'url': ['This field is required.'], 'name': ['This field is required.']}
 
@@ -275,6 +281,45 @@ fields. We've specified ``auto_id=False`` to simplify the output:
     <div>Sender:<div class="helptext">A valid email address, please.</div><input type="email" name="sender" required></div>
     <div>Cc myself:<input type="checkbox" name="cc_myself"></div>
 
+When a field has help text it is associated with its input using the
+``aria-describedby`` HTML attribute. If the widget is rendered in a
+``<fieldset>`` then ``aria-describedby`` is added to this element, otherwise it
+is added to the widget's ``<input>``:
+
+.. code-block:: pycon
+
+    >>> from django import forms
+    >>> class UserForm(forms.Form):
+    ...     username = forms.CharField(max_length=255, help_text="e.g., user@example.com")
+    ...
+    >>> f = UserForm()
+    >>> print(f)
+    <div>
+    <label for="id_username">Username:</label>
+    <div class="helptext" id="id_username_helptext">e.g., user@example.com</div>
+    <input type="text" name="username" maxlength="255" required aria-describedby="id_username_helptext" id="id_username">
+    </div>
+
+When adding a custom ``aria-describedby`` attribute, make sure to also include
+the ``id`` of the ``help_text`` element (if used) in the desired order. For
+screen reader users, descriptions will be read in their order of appearance
+inside ``aria-describedby``:
+
+.. code-block:: pycon
+
+    >>> class UserForm(forms.Form):
+    ...     username = forms.CharField(
+    ...         max_length=255,
+    ...         help_text="e.g., user@example.com",
+    ...         widget=forms.TextInput(
+    ...             attrs={"aria-describedby": "custom-description id_username_helptext"},
+    ...         ),
+    ...     )
+    ...
+    >>> f = UserForm()
+    >>> print(f["username"])
+    <input type="text" name="username" aria-describedby="custom-description id_username_helptext" maxlength="255" id="id_username" required>
+
 ``error_messages``
 ------------------
 
@@ -324,7 +369,7 @@ See the :doc:`validators documentation </ref/validators>` for more information.
 The ``localize`` argument enables the localization of form data input, as well
 as the rendered output.
 
-See the :doc:`format localization </topics/i18n/formatting>` documentation for
+See the :doc:`format localization documentation </topics/i18n/formatting>` for
 more information.
 
 ``disabled``
@@ -342,13 +387,21 @@ be ignored in favor of the value from the form's initial data.
 
 .. attribute:: Field.template_name
 
-.. versionadded:: 5.0
-
 The ``template_name`` argument allows a custom template to be used when the
-field is rendered with :meth:`~django.forms.BoundField.as_field_group`. By 
+field is rendered with :meth:`~django.forms.BoundField.as_field_group`. By
 default this value is set to ``"django/forms/field.html"``. Can be changed per
 field by overriding this attribute or more generally by overriding the default
 template, see also :ref:`overriding-built-in-field-templates`.
+
+``bound_field_class``
+---------------------
+
+.. attribute:: Field.bound_field_class
+
+.. versionadded:: 5.2
+
+The ``bound_field_class`` attribute allows a per-field override of
+:attr:`.Form.bound_field_class`.
 
 Checking if the field data has changed
 ======================================
@@ -452,10 +505,11 @@ For each field, we describe the default widget used if you don't specify
         time the field's form is initialized, in addition to during rendering.
         Defaults to an empty list.
 
-    .. versionchanged:: 5.0
+    .. admonition:: Choice type
 
-        Support for using :ref:`enumeration types <field-choices-enum-types>`
-        directly in the ``choices`` was added.
+        This field normalizes choices to strings, so if choices are required in
+        other data types, such as integers or booleans, consider using
+        :class:`TypedChoiceField` instead.
 
 ``DateField``
 -------------
@@ -596,7 +650,8 @@ For each field, we describe the default widget used if you don't specify
     * Error message keys: ``required``, ``invalid``
 
     Has the optional arguments ``max_length``, ``min_length``, and
-    ``empty_value`` which work just as they do for :class:`CharField`.
+    ``empty_value`` which work just as they do for :class:`CharField`. The
+    ``max_length`` argument defaults to 320 (see :rfc:`3696#section-3`).
 
 ``FileField``
 -------------
@@ -712,7 +767,7 @@ For each field, we describe the default widget used if you don't specify
     * Empty value: ``''`` (an empty string)
     * Normalizes to: A string. IPv6 addresses are normalized as described below.
     * Validates that the given value is a valid IP address.
-    * Error message keys: ``required``, ``invalid``
+    * Error message keys: ``required``, ``invalid``, ``max_length``
 
     The IPv6 address normalization follows :rfc:`4291#section-2.2` section 2.2,
     including using the IPv4 format suggested in paragraph 3 of that section, like
@@ -720,7 +775,7 @@ For each field, we describe the default widget used if you don't specify
     ``2001::1``, and ``::ffff:0a0a:0a0a`` to ``::ffff:10.10.10.10``. All characters
     are converted to lowercase.
 
-    Takes two optional arguments:
+    Takes three optional arguments:
 
     .. attribute:: protocol
 
@@ -734,6 +789,11 @@ For each field, we describe the default widget used if you don't specify
         If this option is enabled that address would be unpacked to
         ``192.0.2.1``. Default is disabled. Can only be used
         when ``protocol`` is set to ``'both'``.
+
+    .. attribute:: max_length
+
+        Defaults to 39, and behaves the same way as it does for
+        :class:`CharField`.
 
 ``ImageField``
 --------------
@@ -750,11 +810,11 @@ For each field, we describe the default widget used if you don't specify
     * Error message keys: ``required``, ``invalid``, ``missing``, ``empty``,
       ``invalid_image``
 
-    Using an ``ImageField`` requires that `Pillow`_ is installed with support
-    for the image formats you use. If you encounter a ``corrupt image`` error
-    when you upload an image, it usually means that Pillow doesn't understand
-    its format. To fix this, install the appropriate library and reinstall
-    Pillow.
+    Using an ``ImageField`` requires that :pypi:`pillow` is installed with
+    support for the image formats you use. If you encounter a ``corrupt image``
+    error when you upload an image, it usually means that Pillow doesn't
+    understand its format. To fix this, install the appropriate library and
+    reinstall Pillow.
 
     When you use an ``ImageField`` on a form, you must also remember to
     :ref:`bind the file data to the form <binding-uploaded-files>`.
@@ -800,7 +860,6 @@ For each field, we describe the default widget used if you don't specify
     image's content type if Pillow can determine it, otherwise it will be set
     to ``None``.
 
-.. _Pillow: https://pillow.readthedocs.io/en/latest/
 .. _Image: https://pillow.readthedocs.io/en/latest/reference/Image.html
 
 ``IntegerField``
@@ -1078,17 +1137,14 @@ For each field, we describe the default widget used if you don't specify
     * Error message keys: ``required``, ``invalid``
 
     Has the optional arguments ``max_length``, ``min_length``, ``empty_value``
-    which work just as they do for :class:`CharField`, and ``assume_scheme``
-    that defaults to ``"http"``.
+    which work just as they do for :class:`CharField`, and one more argument:
 
-    .. versionchanged:: 5.0
+    .. attribute:: assume_scheme
 
-        The ``assume_scheme`` argument was added.
-
-    .. deprecated:: 5.0
-
-        The default value for ``assume_scheme`` will change from ``"http"`` to
-        ``"https"`` in Django 6.0.
+        The scheme assumed for URLs provided without one. Defaults to
+        ``"http"``. For example, if ``assume_scheme`` is ``"https"`` and the
+        provided value is ``"example.com"``, the normalized value will be
+        ``"https://example.com"``.
 
 ``UUIDField``
 -------------
@@ -1125,11 +1181,13 @@ Slightly complex built-in ``Field`` classes
         The list of fields that should be used to validate the field's value (in
         the order in which they are provided).
 
+        .. code-block:: pycon
+
             >>> from django.forms import ComboField
             >>> f = ComboField(fields=[CharField(max_length=20), EmailField()])
-            >>> f.clean('test@example.com')
+            >>> f.clean("test@example.com")
             'test@example.com'
-            >>> f.clean('longemailaddress@example.com')
+            >>> f.clean("longemailaddress@example.com")
             Traceback (most recent call last):
             ...
             ValidationError: ['Ensure this value has at most 20 characters (it has 28).']
@@ -1572,4 +1630,14 @@ only requirements are that it implement a ``clean()`` method and that its
 ``label``, ``initial``, ``widget``, ``help_text``).
 
 You can also customize how a field will be accessed by overriding
-:meth:`~django.forms.Field.get_bound_field()`.
+:attr:`~django.forms.Field.bound_field_class` or override
+:meth:`.Field.get_bound_field()` if you need more flexibility when creating
+the ``BoundField``:
+
+.. method:: Field.get_bound_field(form, field_name)
+
+    Takes an instance of :class:`~django.forms.Form` and the name of the field.
+    The returned :class:`.BoundField` instance will be used when accessing the
+    field in a template.
+
+See :ref:`custom-boundfield` for examples of overriding a ``BoundField``.

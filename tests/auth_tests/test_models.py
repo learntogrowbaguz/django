@@ -1,7 +1,5 @@
 from unittest import mock
 
-from asgiref.sync import sync_to_async
-
 from django.conf.global_settings import PASSWORD_HASHERS
 from django.contrib.auth import get_user_model
 from django.contrib.auth.backends import ModelBackend
@@ -20,8 +18,6 @@ from django.db import connection, migrations
 from django.db.migrations.state import ModelState, ProjectState
 from django.db.models.signals import post_save
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
-from django.test.utils import ignore_warnings
-from django.utils.deprecation import RemovedInDjango51Warning
 
 from .models import CustomEmailField, IntegerUsernameUser
 
@@ -32,9 +28,18 @@ class NaturalKeysTestCase(TestCase):
         self.assertEqual(User.objects.get_by_natural_key("staff"), staff_user)
         self.assertEqual(staff_user.natural_key(), ("staff",))
 
+    async def test_auser_natural_key(self):
+        staff_user = await User.objects.acreate_user(username="staff")
+        self.assertEqual(await User.objects.aget_by_natural_key("staff"), staff_user)
+        self.assertEqual(staff_user.natural_key(), ("staff",))
+
     def test_group_natural_key(self):
         users_group = Group.objects.create(name="users")
         self.assertEqual(Group.objects.get_by_natural_key("users"), users_group)
+
+    async def test_agroup_natural_key(self):
+        users_group = await Group.objects.acreate(name="users")
+        self.assertEqual(await Group.objects.aget_by_natural_key("users"), users_group)
 
 
 class LoadDataWithoutNaturalKeysTestCase(TestCase):
@@ -159,6 +164,17 @@ class UserManagerTestCase(TransactionTestCase):
                 is_superuser=False,
             )
 
+    async def test_acreate_super_user_raises_error_on_false_is_superuser(self):
+        with self.assertRaisesMessage(
+            ValueError, "Superuser must have is_superuser=True."
+        ):
+            await User.objects.acreate_superuser(
+                username="test",
+                email="test@test.com",
+                password="test",
+                is_superuser=False,
+            )
+
     def test_create_superuser_raises_error_on_false_is_staff(self):
         with self.assertRaisesMessage(ValueError, "Superuser must have is_staff=True."):
             User.objects.create_superuser(
@@ -168,18 +184,14 @@ class UserManagerTestCase(TransactionTestCase):
                 is_staff=False,
             )
 
-    @ignore_warnings(category=RemovedInDjango51Warning)
-    def test_make_random_password(self):
-        allowed_chars = "abcdefg"
-        password = UserManager().make_random_password(5, allowed_chars)
-        self.assertEqual(len(password), 5)
-        for char in password:
-            self.assertIn(char, allowed_chars)
-
-    def test_make_random_password_warning(self):
-        msg = "BaseUserManager.make_random_password() is deprecated."
-        with self.assertWarnsMessage(RemovedInDjango51Warning, msg):
-            UserManager().make_random_password()
+    async def test_acreate_superuser_raises_error_on_false_is_staff(self):
+        with self.assertRaisesMessage(ValueError, "Superuser must have is_staff=True."):
+            await User.objects.acreate_superuser(
+                username="test",
+                email="test@test.com",
+                password="test",
+                is_staff=False,
+            )
 
     def test_runpython_manager_methods(self):
         def forwards(apps, schema_editor):
@@ -316,9 +328,7 @@ class AbstractUserTestCase(TestCase):
 
     @override_settings(PASSWORD_HASHERS=PASSWORD_HASHERS)
     async def test_acheck_password_upgrade(self):
-        user = await sync_to_async(User.objects.create_user)(
-            username="user", password="foo"
-        )
+        user = await User.objects.acreate_user(username="user", password="foo")
         initial_password = user.password
         self.assertIs(await user.acheck_password("foo"), True)
         hasher = get_hasher("default")
@@ -448,6 +458,13 @@ class UserWithPermTestCase(TestCase):
                 backend="invalid.backend.CustomModelBackend",
             )
 
+    def test_invalid_backend_submodule(self):
+        with self.assertRaises(ImportError):
+            User.objects.with_perm(
+                "auth.test",
+                backend="json.tool",
+            )
+
     @override_settings(
         AUTHENTICATION_BACKENDS=["auth_tests.test_models.CustomModelBackend"]
     )
@@ -534,9 +551,7 @@ class TestCreateSuperUserSignals(TestCase):
     def setUp(self):
         self.signals_count = 0
         post_save.connect(self.post_save_listener, sender=User)
-
-    def tearDown(self):
-        post_save.disconnect(self.post_save_listener, sender=User)
+        self.addCleanup(post_save.disconnect, self.post_save_listener, sender=User)
 
     def test_create_user(self):
         User.objects.create_user("JohnDoe")
@@ -566,6 +581,12 @@ class AnonymousUserTests(SimpleTestCase):
         self.assertEqual(self.user.user_permissions.count(), 0)
         self.assertEqual(self.user.get_user_permissions(), set())
         self.assertEqual(self.user.get_group_permissions(), set())
+
+    async def test_properties_async_versions(self):
+        self.assertEqual(await self.user.groups.acount(), 0)
+        self.assertEqual(await self.user.user_permissions.acount(), 0)
+        self.assertEqual(await self.user.aget_user_permissions(), set())
+        self.assertEqual(await self.user.aget_group_permissions(), set())
 
     def test_str(self):
         self.assertEqual(str(self.user), "AnonymousUser")

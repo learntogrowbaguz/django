@@ -183,7 +183,7 @@ PostGIS     ``ST_ContainsProperly(poly, geom)``
 -------------
 
 *Availability*: `PostGIS <https://postgis.net/docs/ST_CoveredBy.html>`__,
-Oracle, PGRaster (Bilateral), SpatiaLite
+Oracle, MariaDB 11.7+, MySQL, PGRaster (Bilateral), SpatiaLite
 
 Tests if no point in the geometry field is outside the lookup geometry.
 [#fncovers]_
@@ -197,8 +197,14 @@ Backend     SQL Equivalent
 ==========  =============================
 PostGIS     ``ST_CoveredBy(poly, geom)``
 Oracle      ``SDO_COVEREDBY(poly, geom)``
+MariaDB     ``MBRCoveredBy(poly, geom)``
+MySQL       ``MBRCoveredBy(poly, geom)``
 SpatiaLite  ``CoveredBy(poly, geom)``
 ==========  =============================
+
+.. versionchanged:: 5.2
+
+    MySQL and MariaDB 11.7+ support was added.
 
 .. fieldlookup:: covers
 
@@ -206,7 +212,7 @@ SpatiaLite  ``CoveredBy(poly, geom)``
 ----------
 
 *Availability*: `PostGIS <https://postgis.net/docs/ST_Covers.html>`__,
-Oracle, PGRaster (Bilateral), SpatiaLite
+Oracle, MySQL, PGRaster (Bilateral), SpatiaLite
 
 Tests if no point in the lookup geometry is outside the geometry field.
 [#fncovers]_
@@ -220,8 +226,13 @@ Backend     SQL Equivalent
 ==========  ==========================
 PostGIS     ``ST_Covers(poly, geom)``
 Oracle      ``SDO_COVERS(poly, geom)``
+MySQL       ``MBRCovers(poly, geom)``
 SpatiaLite  ``Covers(poly, geom)``
 ==========  ==========================
+
+.. versionchanged:: 5.2
+
+    MySQL support was added.
 
 .. fieldlookup:: crosses
 
@@ -351,8 +362,6 @@ SpatiaLite  ``Intersects(poly, geom)``
 ``isempty``
 -----------
 
-.. versionadded:: 4.2
-
 *Availability*: `PostGIS <https://postgis.net/docs/ST_IsEmpty.html>`__
 
 Tests if the geometry is empty.
@@ -366,8 +375,8 @@ Example::
 ``isvalid``
 -----------
 
-*Availability*: MySQL, `PostGIS <https://postgis.net/docs/ST_IsValid.html>`__,
-Oracle, SpatiaLite
+*Availability*: MariaDB, MySQL,
+`PostGIS <https://postgis.net/docs/ST_IsValid.html>`__, Oracle, SpatiaLite
 
 Tests if the geometry is valid.
 
@@ -375,12 +384,16 @@ Example::
 
     Zipcode.objects.filter(poly__isvalid=True)
 
-==========================  ================================================================
-Backend                     SQL Equivalent
-==========================  ================================================================
-MySQL, PostGIS, SpatiaLite  ``ST_IsValid(poly)``
-Oracle                      ``SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(poly, 0.05) = 'TRUE'``
-==========================  ================================================================
+===================================  ================================================================
+Backend                              SQL Equivalent
+===================================  ================================================================
+MariaDB, MySQL, PostGIS, SpatiaLite  ``ST_IsValid(poly)``
+Oracle                               ``SDO_GEOM.VALIDATE_GEOMETRY_WITH_CONTEXT(poly, 0.05) = 'TRUE'``
+===================================  ================================================================
+
+.. versionchanged:: 5.2
+
+    MariaDB 11.7+ support was added.
 
 .. fieldlookup:: overlaps
 
@@ -873,7 +886,7 @@ Example:
 .. class:: Collect(geo_field, filter=None)
 
 *Availability*: `PostGIS <https://postgis.net/docs/ST_Collect.html>`__,
-SpatiaLite
+MariaDB, MySQL, SpatiaLite
 
 Returns a ``GEOMETRYCOLLECTION`` or a ``MULTI`` geometry object from the geometry
 column. This is analogous to a simplified version of the :class:`Union`
@@ -881,9 +894,9 @@ aggregate, except it can be several orders of magnitude faster than performing
 a union because it rolls up geometries into a collection or multi object, not
 caring about dissolving boundaries.
 
-.. versionchanged:: 5.0
+.. versionchanged:: 5.2
 
-    Support for using the ``filter`` argument was added.
+    MariaDB 11.7+ support was added.
 
 ``Extent``
 ~~~~~~~~~~
@@ -904,10 +917,6 @@ Example:
     >>> print(qs["poly__extent"])
     (-96.8016128540039, 29.7633724212646, -95.3631439208984, 32.782058715820)
 
-.. versionchanged:: 5.0
-
-    Support for using the ``filter`` argument was added.
-
 ``Extent3D``
 ~~~~~~~~~~~~
 
@@ -927,10 +936,6 @@ Example:
     >>> print(qs["poly__extent3d"])
     (-96.8016128540039, 29.7633724212646, 0, -95.3631439208984, 32.782058715820, 0)
 
-.. versionchanged:: 5.0
-
-    Support for using the ``filter`` argument was added.
-
 ``MakeLine``
 ~~~~~~~~~~~~
 
@@ -949,10 +954,6 @@ Example:
     >>> qs = City.objects.filter(name__in=("Houston", "Dallas")).aggregate(MakeLine("poly"))
     >>> print(qs["poly__makeline"])
     LINESTRING (-95.3631510000000020 29.7633739999999989, -96.8016109999999941 32.7820570000000018)
-
-.. versionchanged:: 5.0
-
-    Support for using the ``filter`` argument was added.
 
 ``Union``
 ~~~~~~~~~
@@ -980,10 +981,6 @@ Example:
     >>> u = Zipcode.objects.filter(poly__within=bbox).aggregate(
     ...     Union(poly)
     ... )  # A more sensible approach.
-
-.. versionchanged:: 5.0
-
-    Support for using the ``filter`` argument was added.
 
 .. rubric:: Footnotes
 .. [#fnde9im] *See* `OpenGIS Simple Feature Specification For SQL <https://portal.ogc.org/files/?artifact_id=829>`_, at Ch. 2.1.13.2, p. 2-13 (The Dimensionally Extended Nine-Intersection Model).
