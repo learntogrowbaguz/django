@@ -3,7 +3,7 @@ from unittest import mock
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import NotSupportedError, connection
-from django.db.models import Prefetch, QuerySet, prefetch_related_objects
+from django.db.models import F, Prefetch, QuerySet, prefetch_related_objects
 from django.db.models.query import get_prefetcher
 from django.db.models.sql import Query
 from django.test import (
@@ -361,7 +361,7 @@ class PrefetchRelatedTests(TestDataMixin, TestCase):
                     Query,
                     "add_q",
                     autospec=True,
-                    side_effect=lambda self, q: add_q(self, q),
+                    side_effect=lambda self, q, reuse_all: add_q(self, q),
                 ) as add_q_mock:
                     list(Book.objects.prefetch_related(relation))
                     self.assertEqual(add_q_mock.call_count, 1)
@@ -391,6 +391,46 @@ class PrefetchRelatedTests(TestDataMixin, TestCase):
         )
         with self.assertRaisesMessage(ValueError, msg):
             Book.objects.prefetch_related("authors").iterator()
+
+    def test_m2m_join_reuse(self):
+        FavoriteAuthors.objects.bulk_create(
+            [
+                FavoriteAuthors(
+                    author=self.author1, likes_author=self.author3, is_active=True
+                ),
+                FavoriteAuthors(
+                    author=self.author1,
+                    likes_author=self.author4,
+                    is_active=False,
+                ),
+                FavoriteAuthors(
+                    author=self.author2, likes_author=self.author3, is_active=True
+                ),
+                FavoriteAuthors(
+                    author=self.author2, likes_author=self.author4, is_active=True
+                ),
+            ]
+        )
+        with self.assertNumQueries(2):
+            authors = list(
+                Author.objects.filter(
+                    pk__in=[self.author1.pk, self.author2.pk]
+                ).prefetch_related(
+                    Prefetch(
+                        "favorite_authors",
+                        queryset=(
+                            Author.objects.annotate(
+                                active_favorite=F("likes_me__is_active"),
+                            ).filter(active_favorite=True)
+                        ),
+                        to_attr="active_favorite_authors",
+                    )
+                )
+            )
+        self.assertEqual(authors[0].active_favorite_authors, [self.author3])
+        self.assertEqual(
+            authors[1].active_favorite_authors, [self.author3, self.author4]
+        )
 
 
 class RawQuerySetTests(TestDataMixin, TestCase):
@@ -978,6 +1018,31 @@ class CustomPrefetchTests(TestCase):
         with self.assertNumQueries(5):
             self.traverse_qs(list(houses), [["occupants", "houses", "main_room"]])
 
+    def test_nested_prefetch_related_with_duplicate_prefetch_and_depth(self):
+        people = Person.objects.prefetch_related(
+            Prefetch(
+                "houses__main_room",
+                queryset=Room.objects.filter(name="Dining room"),
+                to_attr="dining_room",
+            ),
+            "houses__main_room",
+        )
+        with self.assertNumQueries(4):
+            main_room = people[0].houses.all()[0]
+
+        people = Person.objects.prefetch_related(
+            "houses__main_room",
+            Prefetch(
+                "houses__main_room",
+                queryset=Room.objects.filter(name="Dining room"),
+                to_attr="dining_room",
+            ),
+        )
+        with self.assertNumQueries(4):
+            main_room = people[0].houses.all()[0]
+
+        self.assertEqual(main_room.main_room, self.room1_1)
+
     def test_values_queryset(self):
         msg = "Prefetch querysets cannot use raw(), values(), and values_list()."
         with self.assertRaisesMessage(ValueError, msg):
@@ -1021,7 +1086,7 @@ class CustomPrefetchTests(TestCase):
             Query,
             "add_q",
             autospec=True,
-            side_effect=lambda self, q: add_q(self, q),
+            side_effect=lambda self, q, reuse_all: add_q(self, q),
         ) as add_q_mock:
             list(
                 House.objects.prefetch_related(
@@ -1228,6 +1293,20 @@ class GenericRelationTests(TestCase):
                     (self.book2.pk, ct.pk, self.book2),
                 ],
             )
+
+    def test_reverse_generic_relation(self):
+        # Create two distinct bookmarks to ensure the bookmark and
+        # tagged item models primary are offset.
+        first_bookmark = Bookmark.objects.create()
+        second_bookmark = Bookmark.objects.create()
+        TaggedItem.objects.create(
+            content_object=first_bookmark, favorite=second_bookmark
+        )
+        with self.assertNumQueries(2):
+            obj = TaggedItem.objects.prefetch_related("favorite_bookmarks").get()
+        with self.assertNumQueries(0):
+            prefetched_bookmarks = obj.favorite_bookmarks.all()
+            self.assertQuerySetEqual(prefetched_bookmarks, [second_bookmark])
 
 
 class MultiTableInheritanceTest(TestCase):
@@ -1592,8 +1671,9 @@ class MultiDbTests(TestCase):
         )
 
         # Explicit using on a different db.
-        with self.assertNumQueries(1, using="default"), self.assertNumQueries(
-            1, using="other"
+        with (
+            self.assertNumQueries(1, using="default"),
+            self.assertNumQueries(1, using="other"),
         ):
             prefetch = Prefetch(
                 "first_time_authors", queryset=Author.objects.using("default")
@@ -1671,7 +1751,7 @@ class Ticket21760Tests(TestCase):
 
     def test_bug(self):
         prefetcher = get_prefetcher(self.rooms[0], "house", "house")[0]
-        queryset = prefetcher.get_prefetch_queryset(list(Room.objects.all()))[0]
+        queryset = prefetcher.get_prefetch_querysets(list(Room.objects.all()))[0]
         self.assertNotIn(" JOIN ", str(queryset.query))
 
 
@@ -1969,3 +2049,18 @@ class PrefetchLimitTests(TestDataMixin, TestCase):
         )
         with self.assertRaisesMessage(NotSupportedError, msg):
             list(Book.objects.prefetch_related(Prefetch("authors", authors[1:])))
+
+    @skipUnlessDBFeature("supports_over_clause")
+    def test_empty_order(self):
+        authors = Author.objects.order_by()
+        with self.assertNumQueries(3):
+            books = list(
+                Book.objects.prefetch_related(
+                    Prefetch("authors", authors),
+                    Prefetch("authors", authors[:1], to_attr="authors_sliced"),
+                )
+            )
+        for book in books:
+            with self.subTest(book=book):
+                self.assertEqual(len(book.authors_sliced), 1)
+                self.assertIn(book.authors_sliced[0], list(book.authors.all()))

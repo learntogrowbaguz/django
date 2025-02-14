@@ -2,6 +2,7 @@
  This module contains the 'base' GEOSGeometry object -- all GEOS Geometries
  inherit from this object.
 """
+
 import re
 from ctypes import addressof, byref, c_double
 
@@ -238,8 +239,6 @@ class GEOSGeometryBase(GEOSBase):
         Attempt to create a valid representation of a given invalid geometry
         without losing any of the input vertices.
         """
-        if geos_version_tuple() < (3, 8):
-            raise GEOSException("GEOSGeometry.make_valid() requires GEOS >= 3.8.0.")
         return GEOSGeometry(capi.geos_makevalid(self.ptr), srid=self.srid)
 
     # #### Unary predicates ####
@@ -253,8 +252,15 @@ class GEOSGeometryBase(GEOSBase):
 
     @property
     def hasz(self):
-        "Return whether the geometry has a 3D dimension."
+        "Return whether the geometry has a Z dimension."
         return capi.geos_hasz(self.ptr)
+
+    @property
+    def hasm(self):
+        "Return whether the geometry has a M dimension."
+        if geos_version_tuple() < (3, 12):
+            raise GEOSException("GEOSGeometry.hasm requires GEOS >= 3.12.0.")
+        return capi.geos_hasm(self.ptr)
 
     @property
     def ring(self):
@@ -319,6 +325,16 @@ class GEOSGeometryBase(GEOSBase):
         specified tolerance.
         """
         return capi.geos_equalsexact(self.ptr, other.ptr, float(tolerance))
+
+    def equals_identical(self, other):
+        """
+        Return true if the two Geometries are point-wise equivalent.
+        """
+        if geos_version_tuple() < (3, 12):
+            raise GEOSException(
+                "GEOSGeometry.equals_identical() requires GEOS >= 3.12.0."
+            )
+        return capi.geos_equalsidentical(self.ptr, other.ptr)
 
     def intersects(self, other):
         "Return true if disjoint return false."

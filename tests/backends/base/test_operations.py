@@ -3,7 +3,7 @@ import decimal
 from django.core.management.color import no_style
 from django.db import NotSupportedError, connection, transaction
 from django.db.backends.base.operations import BaseDatabaseOperations
-from django.db.models import DurationField, Value
+from django.db.models import DurationField
 from django.db.models.expressions import Col
 from django.test import (
     SimpleTestCase,
@@ -86,16 +86,8 @@ class SimpleDatabaseOperationTests(SimpleTestCase):
     def test_adapt_timefield_value_none(self):
         self.assertIsNone(self.ops.adapt_timefield_value(None))
 
-    def test_adapt_timefield_value_expression(self):
-        value = Value(timezone.now().time())
-        self.assertEqual(self.ops.adapt_timefield_value(value), value)
-
     def test_adapt_datetimefield_value_none(self):
         self.assertIsNone(self.ops.adapt_datetimefield_value(None))
-
-    def test_adapt_datetimefield_value_expression(self):
-        value = Value(timezone.now())
-        self.assertEqual(self.ops.adapt_datetimefield_value(value), value)
 
     def test_adapt_timefield_value(self):
         msg = "Django does not support timezone-aware times."
@@ -178,12 +170,6 @@ class SimpleDatabaseOperationTests(SimpleTestCase):
 class DatabaseOperationTests(TestCase):
     def setUp(self):
         self.ops = BaseDatabaseOperations(connection=connection)
-
-    @skipIfDBFeature("supports_over_clause")
-    def test_window_frame_raise_not_supported_error(self):
-        msg = "This backend does not support window expressions."
-        with self.assertRaisesMessage(NotSupportedError, msg):
-            self.ops.window_frame_rows_start_end()
 
     @skipIfDBFeature("can_distinct_on_fields")
     def test_distinct_on_fields(self):

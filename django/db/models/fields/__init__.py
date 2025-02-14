@@ -1,4 +1,3 @@
-import collections.abc
 import copy
 import datetime
 import decimal
@@ -6,6 +5,7 @@ import operator
 import uuid
 import warnings
 from base64 import b64decode, b64encode
+from collections.abc import Iterable
 from functools import partialmethod, total_ordering
 
 from django import forms
@@ -14,9 +14,15 @@ from django.conf import settings
 from django.core import checks, exceptions, validators
 from django.db import connection, connections, router
 from django.db.models.constants import LOOKUP_SEP
-from django.db.models.enums import ChoicesMeta
 from django.db.models.query_utils import DeferredAttribute, RegisterLookupMixin
+from django.db.utils import NotSupportedError
 from django.utils import timezone
+from django.utils.choices import (
+    BlankChoiceIterator,
+    CallableChoiceIterator,
+    flatten_choices,
+    normalize_choices,
+)
 from django.utils.datastructures import DictWrapper
 from django.utils.dateparse import (
     parse_date,
@@ -26,8 +32,7 @@ from django.utils.dateparse import (
 )
 from django.utils.duration import duration_microseconds, duration_string
 from django.utils.functional import Promise, cached_property
-from django.utils.ipv6 import clean_ipv6_address
-from django.utils.itercompat import is_iterable
+from django.utils.ipv6 import MAX_IPV6_ADDRESS_LENGTH, clean_ipv6_address
 from django.utils.text import capfirst
 from django.utils.translation import gettext_lazy as _
 
@@ -166,6 +171,7 @@ class Field(RegisterLookupMixin):
     one_to_many = None
     one_to_one = None
     related_model = None
+    generated = False
 
     descriptor_class = DeferredAttribute
 
@@ -213,22 +219,12 @@ class Field(RegisterLookupMixin):
         self.remote_field = rel
         self.is_relation = self.remote_field is not None
         self.default = default
-        if db_default is not NOT_PROVIDED and not hasattr(
-            db_default, "resolve_expression"
-        ):
-            from django.db.models.expressions import Value
-
-            db_default = Value(db_default)
         self.db_default = db_default
         self.editable = editable
         self.serialize = serialize
         self.unique_for_date = unique_for_date
         self.unique_for_month = unique_for_month
         self.unique_for_year = unique_for_year
-        if isinstance(choices, ChoicesMeta):
-            choices = choices.choices
-        if isinstance(choices, collections.abc.Iterator):
-            choices = list(choices)
         self.choices = choices
         self.help_text = help_text
         self.db_index = db_index
@@ -285,6 +281,8 @@ class Field(RegisterLookupMixin):
         Check if field name is valid, i.e. 1) does not end with an
         underscore, 2) does not contain "__" and 3) is not "pk".
         """
+        if self.name is None:
+            return []
         if self.name.endswith("_"):
             return [
                 checks.Error(
@@ -314,16 +312,17 @@ class Field(RegisterLookupMixin):
 
     @classmethod
     def _choices_is_value(cls, value):
-        return isinstance(value, (str, Promise)) or not is_iterable(value)
+        return isinstance(value, (str, Promise)) or not isinstance(value, Iterable)
 
     def _check_choices(self):
         if not self.choices:
             return []
 
-        if not is_iterable(self.choices) or isinstance(self.choices, str):
+        if not isinstance(self.choices, Iterable) or isinstance(self.choices, str):
             return [
                 checks.Error(
-                    "'choices' must be an iterable (e.g., a list or tuple).",
+                    "'choices' must be a mapping (e.g. a dictionary) or an iterable "
+                    "(e.g. a list or tuple).",
                     obj=self,
                     id="fields.E004",
                 )
@@ -381,8 +380,8 @@ class Field(RegisterLookupMixin):
 
         return [
             checks.Error(
-                "'choices' must be an iterable containing "
-                "(actual value, human readable name) tuples.",
+                "'choices' must be a mapping of actual values to human readable names "
+                "or an iterable containing (actual value, human readable name) tuples.",
                 obj=self,
                 id="fields.E005",
             )
@@ -392,8 +391,11 @@ class Field(RegisterLookupMixin):
         from django.db.models.expressions import Value
 
         if (
-            self.db_default is NOT_PROVIDED
-            or isinstance(self.db_default, Value)
+            not self.has_db_default()
+            or (
+                isinstance(self.db_default, Value)
+                or not hasattr(self.db_default, "resolve_expression")
+            )
             or databases is None
         ):
             return []
@@ -403,7 +405,7 @@ class Field(RegisterLookupMixin):
                 continue
             connection = connections[db]
 
-            if not getattr(self.db_default, "allowed_default", False) and (
+            if not getattr(self._db_default_expression, "allowed_default", False) and (
                 connection.features.supports_expression_defaults
             ):
                 msg = f"{self.db_default} cannot be used in db_default."
@@ -543,6 +545,14 @@ class Field(RegisterLookupMixin):
 
         return Col(alias, self, output_field)
 
+    @property
+    def choices(self):
+        return self._choices
+
+    @choices.setter
+    def choices(self, value):
+        self._choices = normalize_choices(value)
+
     @cached_property
     def cached_col(self):
         from django.db.models.expressions import Col
@@ -625,9 +635,8 @@ class Field(RegisterLookupMixin):
         equals_comparison = {"choices", "validators"}
         for name, default in possibles.items():
             value = getattr(self, attr_overrides.get(name, name))
-            # Unroll anything iterable for choices into a concrete list
-            if name == "choices" and isinstance(value, collections.abc.Iterable):
-                value = list(value)
+            if isinstance(value, CallableChoiceIterator):
+                value = value.func
             # Do correct kind of comparison
             if name in equals_comparison:
                 if value != default:
@@ -641,10 +650,14 @@ class Field(RegisterLookupMixin):
             path = path.replace("django.db.models.fields.related", "django.db.models")
         elif path.startswith("django.db.models.fields.files"):
             path = path.replace("django.db.models.fields.files", "django.db.models")
+        elif path.startswith("django.db.models.fields.generated"):
+            path = path.replace("django.db.models.fields.generated", "django.db.models")
         elif path.startswith("django.db.models.fields.json"):
             path = path.replace("django.db.models.fields.json", "django.db.models")
         elif path.startswith("django.db.models.fields.proxy"):
             path = path.replace("django.db.models.fields.proxy", "django.db.models")
+        elif path.startswith("django.db.models.fields.composite"):
+            path = path.replace("django.db.models.fields.composite", "django.db.models")
         elif path.startswith("django.db.models.fields"):
             path = path.replace("django.db.models.fields", "django.db.models")
         # Return basic info - other fields should override this.
@@ -908,7 +921,7 @@ class Field(RegisterLookupMixin):
             return [self.from_db_value]
         return []
 
-    @property
+    @cached_property
     def unique(self):
         return self._unique or self.primary_key
 
@@ -920,8 +933,7 @@ class Field(RegisterLookupMixin):
     def db_returning(self):
         """Private API intended only to be used by Django itself."""
         return (
-            self.db_default is not NOT_PROVIDED
-            and connection.features.can_return_columns_from_insert
+            self.has_db_default() and connection.features.can_return_columns_from_insert
         )
 
     def set_attributes_from_name(self, name):
@@ -975,13 +987,7 @@ class Field(RegisterLookupMixin):
 
     def pre_save(self, model_instance, add):
         """Return field's value just before saving."""
-        value = getattr(model_instance, self.attname)
-        if not connection.features.supports_default_keyword_in_insert:
-            from django.db.models.expressions import DatabaseDefault
-
-            if isinstance(value, DatabaseDefault):
-                return self.db_default
-        return value
+        return getattr(model_instance, self.attname)
 
     def get_prep_value(self, value):
         """Perform preliminary non-db specific value checks and conversions."""
@@ -1009,6 +1015,10 @@ class Field(RegisterLookupMixin):
         """Return a boolean of whether this field has a default value."""
         return self.default is not NOT_PROVIDED
 
+    def has_db_default(self):
+        """Return a boolean of whether this field has a db_default value."""
+        return self.db_default is not NOT_PROVIDED
+
     def get_default(self):
         """Return the default value for this field."""
         return self._get_default()
@@ -1020,10 +1030,12 @@ class Field(RegisterLookupMixin):
                 return self.default
             return lambda: self.default
 
-        if self.db_default is not NOT_PROVIDED:
+        if self.has_db_default():
             from django.db.models.expressions import DatabaseDefault
 
-            return DatabaseDefault
+            return lambda: DatabaseDefault(
+                self._db_default_expression, output_field=self
+            )
 
         if (
             not self.empty_strings_allowed
@@ -1032,6 +1044,15 @@ class Field(RegisterLookupMixin):
         ):
             return return_None
         return str  # return empty string
+
+    @cached_property
+    def _db_default_expression(self):
+        db_default = self.db_default
+        if self.has_db_default() and not hasattr(db_default, "resolve_expression"):
+            from django.db.models.expressions import Value
+
+            db_default = Value(db_default, self)
+        return db_default
 
     def get_choices(
         self,
@@ -1045,14 +1066,9 @@ class Field(RegisterLookupMixin):
         as <select> choices for this field.
         """
         if self.choices is not None:
-            choices = list(self.choices)
             if include_blank:
-                blank_defined = any(
-                    choice in ("", None) for choice, _ in self.flatchoices
-                )
-                if not blank_defined:
-                    choices = blank_choice + choices
-            return choices
+                return BlankChoiceIterator(self.choices, blank_choice)
+            return self.choices
         rel_model = self.remote_field.model
         limit_choices_to = limit_choices_to or self.get_limit_choices_to()
         choice_func = operator.attrgetter(
@@ -1074,19 +1090,10 @@ class Field(RegisterLookupMixin):
         """
         return str(self.value_from_object(obj))
 
-    def _get_flatchoices(self):
+    @property
+    def flatchoices(self):
         """Flattened version of choices tuple."""
-        if self.choices is None:
-            return []
-        flat = []
-        for choice, value in self.choices:
-            if isinstance(value, (list, tuple)):
-                flat.extend(value)
-            else:
-                flat.append((choice, value))
-        return flat
-
-    flatchoices = property(_get_flatchoices)
+        return list(flatten_choices(self.choices))
 
     def save_form_data(self, instance, data):
         setattr(instance, self.name, data)
@@ -1143,6 +1150,10 @@ class Field(RegisterLookupMixin):
     def value_from_object(self, obj):
         """Return the value of this field in the given model instance."""
         return getattr(obj, self.attname)
+
+    def slice_expression(self, expression, start, length):
+        """Return a slice of this field."""
+        raise NotSupportedError("This field does not support slicing.")
 
 
 class BooleanField(Field):
@@ -1303,6 +1314,11 @@ class CharField(Field):
         if self.db_collation:
             kwargs["db_collation"] = self.db_collation
         return name, path, args, kwargs
+
+    def slice_expression(self, expression, start, length):
+        from django.db.models.functions import Substr
+
+        return Substr(expression, start, length)
 
 
 class CommaSeparatedIntegerField(CharField):
@@ -1589,10 +1605,13 @@ class DateTimeField(DateField):
                 # local time. This won't work during DST change, but we can't
                 # do much about it, so we let the exceptions percolate up the
                 # call stack.
+                try:
+                    name = f"{self.model.__name__}.{self.name}"
+                except AttributeError:
+                    name = "(unbound)"
                 warnings.warn(
-                    "DateTimeField %s.%s received a naive datetime "
-                    "(%s) while time zone support is active."
-                    % (self.model.__name__, self.name, value),
+                    f"DateTimeField {name} received a naive datetime ({value}) while "
+                    "time zone support is active.",
                     RuntimeWarning,
                 )
                 default_timezone = timezone.get_default_timezone()
@@ -1810,9 +1829,8 @@ class DecimalField(Field):
             )
         return decimal_value
 
-    def get_db_prep_save(self, value, connection):
-        if hasattr(value, "as_sql"):
-            return value
+    def get_db_prep_value(self, value, connection, prepared=False):
+        value = super().get_db_prep_value(value, connection, prepared)
         return connection.ops.adapt_decimalfield_value(
             self.to_python(value), self.max_digits, self.decimal_places
         )
@@ -2199,7 +2217,7 @@ class IPAddressField(Field):
 class GenericIPAddressField(Field):
     empty_strings_allowed = False
     description = _("IP address")
-    default_error_messages = {}
+    default_error_messages = {"invalid": _("Enter a valid %(protocol)s address.")}
 
     def __init__(
         self,
@@ -2212,12 +2230,10 @@ class GenericIPAddressField(Field):
     ):
         self.unpack_ipv4 = unpack_ipv4
         self.protocol = protocol
-        (
-            self.default_validators,
-            invalid_error_message,
-        ) = validators.ip_address_validators(protocol, unpack_ipv4)
-        self.default_error_messages["invalid"] = invalid_error_message
-        kwargs["max_length"] = 39
+        self.default_validators = validators.ip_address_validators(
+            protocol, unpack_ipv4
+        )
+        kwargs["max_length"] = MAX_IPV6_ADDRESS_LENGTH
         super().__init__(verbose_name, name, *args, **kwargs)
 
     def check(self, **kwargs):
@@ -2244,7 +2260,7 @@ class GenericIPAddressField(Field):
             kwargs["unpack_ipv4"] = self.unpack_ipv4
         if self.protocol != "both":
             kwargs["protocol"] = self.protocol
-        if kwargs.get("max_length") == 39:
+        if kwargs.get("max_length") == self.max_length:
             del kwargs["max_length"]
         return name, path, args, kwargs
 
@@ -2496,6 +2512,11 @@ class TextField(Field):
         if self.db_collation:
             kwargs["db_collation"] = self.db_collation
         return name, path, args, kwargs
+
+    def slice_expression(self, expression, start, length):
+        from django.db.models.functions import Substr
+
+        return Substr(expression, start, length)
 
 
 class TimeField(DateTimeCheckMixin, Field):

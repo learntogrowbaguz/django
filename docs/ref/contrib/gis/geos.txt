@@ -19,7 +19,7 @@ maintained by `Refractions Research`__ of Victoria, Canada.
 
 __ https://libgeos.org/
 __ https://sourceforge.net/projects/jts-topo-suite/
-__ https://www.ogc.org/standards/sfs
+__ https://www.ogc.org/standard/sfs/
 __ http://www.refractions.net/
 
 Features
@@ -34,8 +34,7 @@ features include:
   may be used outside of a Django project/application.  In other words,
   no need to have :envvar:`DJANGO_SETTINGS_MODULE` set or use a database, etc.
 * Mutability: :class:`GEOSGeometry` objects may be modified.
-* Cross-platform and tested; compatible with Windows, Linux, Solaris, and
-  macOS platforms.
+* Cross-platform tested.
 
 .. _geos-tutorial:
 
@@ -313,7 +312,14 @@ Properties
 
 .. attribute:: GEOSGeometry.hasz
 
-    Returns a boolean indicating whether the geometry is three-dimensional.
+    Returns a boolean indicating whether the geometry has the Z dimension.
+
+.. attribute:: GEOSGeometry.hasm
+
+    .. versionadded:: 6.0
+
+    Returns a boolean indicating whether the geometry has the M dimension.
+    Requires GEOS 3.12.
 
 .. attribute:: GEOSGeometry.ring
 
@@ -325,8 +331,7 @@ Properties
     is simple if and only if it does not intersect itself (except at boundary
     points).  For example, a :class:`LineString` object is not simple if it
     intersects itself. Thus, :class:`LinearRing` and :class:`Polygon` objects
-    are always simple because they do cannot intersect themselves, by
-    definition.
+    are always simple because they cannot intersect themselves, by definition.
 
 .. attribute:: GEOSGeometry.valid
 
@@ -482,6 +487,13 @@ return a boolean.
     point number representing the error tolerance in the comparison, e.g.,
     ``poly1.equals_exact(poly2, 0.001)`` will compare equality to within
     one thousandth of a unit.
+
+.. method:: GEOSGeometry.equals_identical(other)
+
+    Returns ``True`` if the two geometries are point-wise equivalent by
+    checking that the structure, ordering, and values of all vertices are
+    identical in all dimensions. ``NaN`` values are considered to be equal to
+    other ``NaN`` values. Requires GEOS 3.12.
 
 .. method:: GEOSGeometry.intersects(other)
 

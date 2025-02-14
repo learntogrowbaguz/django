@@ -30,7 +30,9 @@ need to :meth:`~Model.save()`.
     You may be tempted to customize the model by overriding the ``__init__``
     method. If you do so, however, take care not to change the calling
     signature as any change may prevent the model instance from being saved.
-    Rather than overriding ``__init__``, try using one of these approaches:
+    Additionally, referring to model fields within ``__init__`` may potentially
+    result in infinite recursion errors in some circumstances.  Rather than
+    overriding ``__init__``, try using one of these approaches:
 
     #. Add a classmethod on the model class::
 
@@ -114,7 +116,7 @@ are loaded from the database::
         return instance
 
 
-    def save(self, *args, **kwargs):
+    def save(self, **kwargs):
         # Check how the current values differ from ._loaded_values. For example,
         # prevent changing the creator_id of the model. (This example doesn't
         # support cases where 'creator_id' is deferred).
@@ -122,7 +124,7 @@ are loaded from the database::
             self.creator_id != self._loaded_values["creator_id"]
         ):
             raise ValueError("Updating the value of creator isn't allowed")
-        super().save(*args, **kwargs)
+        super().save(**kwargs)
 
 The example above shows a full ``from_db()`` implementation to clarify how that
 is done. In this case it would be possible to use a ``super()`` call in the
@@ -140,8 +142,8 @@ value from the database:
     >>> del obj.field
     >>> obj.field  # Loads the field from the database
 
-.. method:: Model.refresh_from_db(using=None, fields=None)
-.. method:: Model.arefresh_from_db(using=None, fields=None)
+.. method:: Model.refresh_from_db(using=None, fields=None, from_queryset=None)
+.. method:: Model.arefresh_from_db(using=None, fields=None, from_queryset=None)
 
 *Asynchronous version*: ``arefresh_from_db()``
 
@@ -195,14 +197,27 @@ all of the instance's fields when a deferred field is reloaded::
                     fields = fields.union(deferred_fields)
             super().refresh_from_db(using, fields, **kwargs)
 
+The ``from_queryset`` argument allows using a different queryset than the one
+created from :attr:`~django.db.models.Model._base_manager`. It gives you more
+control over how the model is reloaded. For example, when your model uses soft
+deletion you can make ``refresh_from_db()`` to take this into account::
+
+    obj.refresh_from_db(from_queryset=MyModel.active_objects.all())
+
+You can cache related objects that otherwise would be cleared from the reloaded
+instance::
+
+    obj.refresh_from_db(from_queryset=MyModel.objects.select_related("related_field"))
+
+You can lock the row until the end of transaction before reloading a model's
+values::
+
+    obj.refresh_from_db(from_queryset=MyModel.objects.select_for_update())
+
 .. method:: Model.get_deferred_fields()
 
 A helper method that returns a set containing the attribute names of all those
 fields that are currently deferred for this model.
-
-.. versionchanged:: 4.2
-
-    ``arefresh_from_db()`` method was added.
 
 .. _validating-objects:
 
@@ -226,17 +241,6 @@ documentation </topics/forms/modelforms>` for more information. You should only
 need to call a model's :meth:`~Model.full_clean()` method if you plan to handle
 validation errors yourself, or if you have excluded fields from the
 :class:`~django.forms.ModelForm` that require validation.
-
-.. warning::
-
-    Constraints containing :class:`~django.db.models.JSONField` may not raise
-    validation errors as key, index, and path transforms have many
-    database-specific caveats. This :ticket:`may be fully supported later
-    <34059>`.
-
-    You should always check that there are no log messages, in the
-    ``django.db.models`` logger, like *"Got a database error calling check() on
-    …"* to confirm it's validated properly.
 
 .. method:: Model.full_clean(exclude=None, validate_unique=True, validate_constraints=True)
 
@@ -372,7 +376,7 @@ Then, ``full_clean()`` will check unique constraints on your model.
                         raise ValidationError(
                             {
                                 "status": _(
-                                    "Set status to draft if there is not a " "publication date."
+                                    "Set status to draft if there is not a publication date."
                                 ),
                             }
                         )
@@ -412,8 +416,8 @@ Saving objects
 
 To save an object back to the database, call ``save()``:
 
-.. method:: Model.save(force_insert=False, force_update=False, using=DEFAULT_DB_ALIAS, update_fields=None)
-.. method:: Model.asave(force_insert=False, force_update=False, using=DEFAULT_DB_ALIAS, update_fields=None)
+.. method:: Model.save(*, force_insert=False, force_update=False, using=DEFAULT_DB_ALIAS, update_fields=None)
+.. method:: Model.asave(*, force_insert=False, force_update=False, using=DEFAULT_DB_ALIAS, update_fields=None)
 
 *Asynchronous version*: ``asave()``
 
@@ -425,10 +429,6 @@ If you want customized saving behavior, you can override this ``save()``
 method. See :ref:`overriding-model-methods` for more details.
 
 The model save process also has some subtleties; see the sections below.
-
-.. versionchanged:: 4.2
-
-    ``asave()`` method was added.
 
 Auto-incrementing primary keys
 ------------------------------
@@ -460,9 +460,14 @@ The ``pk`` property
 Regardless of whether you define a primary key field yourself, or let Django
 supply one for you, each model will have a property called ``pk``. It behaves
 like a normal attribute on the model, but is actually an alias for whichever
-attribute is the primary key field for the model. You can read and set this
-value, just as you would for any other attribute, and it will update the
-correct field in the model.
+field or fields compose the primary key for the model. You can read and set
+this value, just as you would for any other attribute, and it will update the
+correct fields in the model.
+
+.. versionchanged:: 5.2
+
+    Support for the primary key to be composed of multiple fields was added via
+    ``CompositePrimaryKey``.
 
 Explicitly specifying auto-primary-key values
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -544,9 +549,8 @@ object's primary key attribute does **not** define a
 :attr:`~django.db.models.Field.default` or
 :attr:`~django.db.models.Field.db_default`, Django follows this algorithm:
 
-* If the object's primary key attribute is set to a value that evaluates to
-  ``True`` (i.e., a value other than ``None`` or the empty string), Django
-  executes an ``UPDATE``.
+* If the object's primary key attribute is set to anything except ``None``,
+  Django executes an ``UPDATE``.
 * If the object's primary key attribute is *not* set or if the ``UPDATE``
   didn't update anything (e.g. if primary key is set to a value that doesn't
   exist in the database), Django executes an ``INSERT``.
@@ -572,10 +576,6 @@ which returns ``NULL``. In such cases it is possible to revert to the old
 algorithm by setting the :attr:`~django.db.models.Options.select_on_save`
 option to ``True``.
 
-.. versionchanged:: 5.0
-
-    The ``Field.db_default`` parameter was added.
-
 .. _ref-models-force-insert:
 
 Forcing an INSERT or UPDATE
@@ -588,6 +588,18 @@ row. In these cases you can pass the ``force_insert=True`` or
 ``force_update=True`` parameters to the :meth:`~Model.save()` method.
 Passing both parameters is an error: you cannot both insert *and* update at the
 same time!
+
+When using :ref:`multi-table inheritance <multi-table-inheritance>`, it's also
+possible to provide a tuple of parent classes to ``force_insert`` in order to
+force ``INSERT`` statements for each base. For example::
+
+    Restaurant(pk=1, name="Bob's Cafe").save(force_insert=(Place,))
+
+    Restaurant(pk=1, name="Bob's Cafe", rating=4).save(force_insert=(Place, Rating))
+
+You can pass ``force_insert=(models.Model,)`` to force an ``INSERT`` statement
+for all parents. By default, ``force_insert=True`` only forces the insertion of
+a new row for the current model.
 
 It should be very rare that you'll need to use these parameters. Django will
 almost always do the right thing and trying to override that will lead to
@@ -691,10 +703,6 @@ method. See :ref:`overriding-model-methods` for more details.
 Sometimes with :ref:`multi-table inheritance <multi-table-inheritance>` you may
 want to delete only a child model's data. Specifying ``keep_parents=True`` will
 keep the parent model's data.
-
-.. versionchanged:: 4.2
-
-    ``adelete()`` method was added.
 
 Pickling objects
 ================
@@ -895,11 +903,11 @@ For example::
 
 
     class Person(models.Model):
-        SHIRT_SIZES = [
-            ("S", "Small"),
-            ("M", "Medium"),
-            ("L", "Large"),
-        ]
+        SHIRT_SIZES = {
+            "S": "Small",
+            "M": "Medium",
+            "L": "Large",
+        }
         name = models.CharField(max_length=60)
         shirt_size = models.CharField(max_length=2, choices=SHIRT_SIZES)
 
@@ -961,3 +969,14 @@ Other attributes
     since they are yet to be saved. Instances fetched from a ``QuerySet``
     will have ``adding=False`` and ``db`` set to the alias of the associated
     database.
+
+``_is_pk_set()``
+----------------
+
+.. method:: Model._is_pk_set()
+
+.. versionadded:: 5.2
+
+The ``_is_pk_set()`` method returns whether the model instance's ``pk`` is set.
+It abstracts the model's primary key definition, ensuring consistent behavior
+regardless of the specific ``pk`` configuration.

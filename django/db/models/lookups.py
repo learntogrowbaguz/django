@@ -2,7 +2,15 @@ import itertools
 import math
 
 from django.core.exceptions import EmptyResultSet, FullResultSet
-from django.db.models.expressions import Case, Expression, Func, Value, When
+from django.db.models.expressions import (
+    Case,
+    ColPairs,
+    Expression,
+    ExpressionList,
+    Func,
+    Value,
+    When,
+)
 from django.db.models.fields import (
     BooleanField,
     CharField,
@@ -116,10 +124,14 @@ class Lookup(Expression):
             value = value.resolve_expression(compiler.query)
         if hasattr(value, "as_sql"):
             sql, params = compiler.compile(value)
+            if isinstance(value, ColPairs):
+                raise ValueError(
+                    "CompositePrimaryKey cannot be used as a lookup value."
+                )
             # Ensure expression is wrapped in parentheses to respect operator
             # precedence but avoid double wrapping as it can be misinterpreted
             # on some backends (e.g. subqueries on SQLite).
-            if sql and sql[0] != "(":
+            if not isinstance(value, Value) and sql and sql[0] != "(":
                 sql = "(%s)" % sql
             return sql, params
         else:
@@ -217,8 +229,6 @@ class BuiltinLookup(Lookup):
     def process_lhs(self, compiler, connection, lhs=None):
         lhs_sql, params = super().process_lhs(compiler, connection, lhs)
         field_internal_type = self.lhs.output_field.get_internal_type()
-        db_type = self.lhs.output_field.db_type(connection=connection)
-        lhs_sql = connection.ops.field_cast_sql(db_type, field_internal_type) % lhs_sql
         lhs_sql = (
             connection.ops.lookup_cast(self.lookup_name, field_internal_type) % lhs_sql
         )
@@ -251,11 +261,18 @@ class FieldGetDbPrepValueMixin:
             getattr(field, "get_db_prep_value", None)
             or self.lhs.output_field.get_db_prep_value
         )
+        if not self.get_db_prep_lookup_value_is_iterable:
+            value = [value]
         return (
             "%s",
-            [get_db_prep_value(v, connection, prepared=True) for v in value]
-            if self.get_db_prep_lookup_value_is_iterable
-            else [get_db_prep_value(value, connection, prepared=True)],
+            [
+                (
+                    v
+                    if hasattr(v, "as_sql")
+                    else get_db_prep_value(v, connection, prepared=True)
+                )
+                for v in value
+            ],
         )
 
 
@@ -270,15 +287,33 @@ class FieldGetDbPrepValueIterableMixin(FieldGetDbPrepValueMixin):
     def get_prep_lookup(self):
         if hasattr(self.rhs, "resolve_expression"):
             return self.rhs
+        contains_expr = False
         prepared_values = []
         for rhs_value in self.rhs:
             if hasattr(rhs_value, "resolve_expression"):
                 # An expression will be handled by the database but can coexist
                 # alongside real values.
-                pass
-            elif self.prepare_rhs and hasattr(self.lhs.output_field, "get_prep_value"):
+                contains_expr = True
+            elif (
+                self.prepare_rhs
+                and hasattr(self.lhs, "output_field")
+                and hasattr(self.lhs.output_field, "get_prep_value")
+            ):
                 rhs_value = self.lhs.output_field.get_prep_value(rhs_value)
             prepared_values.append(rhs_value)
+        if contains_expr:
+            return ExpressionList(
+                *[
+                    # Expression defaults `str` to field references while
+                    # lookups default them to literal values.
+                    (
+                        Value(prep_value, self.lhs.output_field)
+                        if isinstance(prep_value, str)
+                        else prep_value
+                    )
+                    for prep_value in prepared_values
+                ]
+            )
         return prepared_values
 
     def process_rhs(self, compiler, connection):
@@ -286,6 +321,12 @@ class FieldGetDbPrepValueIterableMixin(FieldGetDbPrepValueMixin):
             # rhs should be an iterable of values. Use batch_process_rhs()
             # to prepare/transform those values.
             return self.batch_process_rhs(compiler, connection)
+        elif isinstance(self.rhs, ExpressionList):
+            # rhs contains at least one expression. Unwrap them and delegate
+            # to batch_process_rhs() to prepare/transform those values.
+            copy = self.copy()
+            copy.rhs = self.rhs.get_source_expressions()
+            return copy.process_rhs(compiler, connection)
         else:
             return super().process_rhs(compiler, connection)
 
@@ -332,16 +373,21 @@ class Exact(FieldGetDbPrepValueMixin, BuiltinLookup):
     def get_prep_lookup(self):
         from django.db.models.sql.query import Query  # avoid circular import
 
-        if isinstance(self.rhs, Query):
-            if self.rhs.has_limit_one():
-                if not self.rhs.has_select_fields:
-                    self.rhs.clear_select_clause()
-                    self.rhs.add_fields(["pk"])
-            else:
+        if isinstance(query := self.rhs, Query):
+            if not query.has_limit_one():
                 raise ValueError(
                     "The QuerySet value for an exact lookup must be limited to "
                     "one result using slicing."
                 )
+            lhs_len = len(self.lhs) if isinstance(self.lhs, (ColPairs, tuple)) else 1
+            if (rhs_len := query._subquery_fields_len) != lhs_len:
+                raise ValueError(
+                    f"The QuerySet value for the exact lookup must have {lhs_len} "
+                    f"selected fields (received {rhs_len})"
+                )
+            if not query.has_select_fields:
+                query.clear_select_clause()
+                query.add_fields(["pk"])
         return super().get_prep_lookup()
 
     def as_sql(self, compiler, connection):
@@ -458,6 +504,12 @@ class In(FieldGetDbPrepValueIterableMixin, BuiltinLookup):
         from django.db.models.sql.query import Query  # avoid circular import
 
         if isinstance(self.rhs, Query):
+            lhs_len = len(self.lhs) if isinstance(self.lhs, (ColPairs, tuple)) else 1
+            if (rhs_len := self.rhs._subquery_fields_len) != lhs_len:
+                raise ValueError(
+                    f"The QuerySet value for the 'in' lookup must have {lhs_len} "
+                    f"selected fields (received {rhs_len})"
+                )
             self.rhs.clear_ordering(clear_default=True)
             if not self.rhs.has_select_fields:
                 self.rhs.clear_select_clause()
@@ -607,6 +659,15 @@ class IsNull(BuiltinLookup):
             raise ValueError(
                 "The QuerySet value for an isnull lookup must be True or False."
             )
+        if isinstance(self.lhs, Value):
+            if self.lhs.value is None or (
+                self.lhs.value == ""
+                and connection.features.interprets_empty_strings_as_nulls
+            ):
+                result_exception = FullResultSet if self.rhs else EmptyResultSet
+            else:
+                result_exception = EmptyResultSet if self.rhs else FullResultSet
+            raise result_exception
         sql, params = self.process_lhs(compiler, connection)
         if self.rhs:
             return "%s IS NULL" % sql, params

@@ -21,7 +21,6 @@ from django.db import models
 from django.forms.widgets import Select
 from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.test.utils import isolate_apps
-from django.utils.deprecation import RemovedInDjango60Warning
 
 from .models import Band, Concert, Song
 
@@ -163,6 +162,46 @@ class ModelAdminTests(TestCase):
         )
 
     @isolate_apps("modeladmin")
+    def test_lookup_allowed_for_local_fk_fields(self):
+        class Country(models.Model):
+            pass
+
+        class Place(models.Model):
+            country = models.ForeignKey(Country, models.CASCADE)
+
+        class PlaceAdmin(ModelAdmin):
+            pass
+
+        ma = PlaceAdmin(Place, self.site)
+
+        cases = [
+            ("country", "1"),
+            ("country__exact", "1"),
+            ("country__id", "1"),
+            ("country__id__exact", "1"),
+            ("country__isnull", True),
+            ("country__isnull", False),
+            ("country__id__isnull", False),
+        ]
+        for lookup, lookup_value in cases:
+            with self.subTest(lookup=lookup):
+                self.assertIs(ma.lookup_allowed(lookup, lookup_value, request), True)
+
+    @isolate_apps("modeladmin")
+    def test_lookup_allowed_non_autofield_primary_key(self):
+        class Country(models.Model):
+            id = models.CharField(max_length=2, primary_key=True)
+
+        class Place(models.Model):
+            country = models.ForeignKey(Country, models.CASCADE)
+
+        class PlaceAdmin(ModelAdmin):
+            list_filter = ["country"]
+
+        ma = PlaceAdmin(Place, self.site)
+        self.assertIs(ma.lookup_allowed("country__id__exact", "DE", request), True)
+
+    @isolate_apps("modeladmin")
     def test_lookup_allowed_foreign_primary(self):
         class Country(models.Model):
             name = models.CharField(max_length=256)
@@ -234,36 +273,6 @@ class ModelAdminTests(TestCase):
             model_admin.lookup_allowed("main_band__name", "?", request_with_superuser),
             True,
         )
-
-    def test_lookup_allowed_without_request_deprecation(self):
-        class ConcertAdmin(ModelAdmin):
-            list_filter = ["main_band__sign_date"]
-
-            def get_list_filter(self, request):
-                return self.list_filter + ["main_band__name"]
-
-            def lookup_allowed(self, lookup, value):
-                return True
-
-        model_admin = ConcertAdmin(Concert, self.site)
-        msg = (
-            "`request` must be added to the signature of ModelAdminTests."
-            "test_lookup_allowed_without_request_deprecation.<locals>."
-            "ConcertAdmin.lookup_allowed()."
-        )
-        request_band_name_filter = RequestFactory().get(
-            "/", {"main_band__name": "test"}
-        )
-        request_band_name_filter.user = User.objects.create_superuser(
-            username="bob", email="bob@test.com", password="test"
-        )
-        with self.assertWarnsMessage(RemovedInDjango60Warning, msg):
-            changelist = model_admin.get_changelist_instance(request_band_name_filter)
-            filterspec = changelist.get_filters(request_band_name_filter)[0][0]
-            self.assertEqual(filterspec.title, "sign date")
-            filterspec = changelist.get_filters(request_band_name_filter)[0][1]
-            self.assertEqual(filterspec.title, "name")
-            self.assertSequenceEqual(filterspec.lookup_choices, [self.band.name])
 
     def test_field_arguments(self):
         # If fields is specified, fieldsets_add and fieldsets_change should
@@ -622,7 +631,8 @@ class ModelAdminTests(TestCase):
         self.assertHTMLEqual(
             str(form["main_band"]),
             '<div class="related-widget-wrapper" data-model-ref="band">'
-            '<select name="main_band" id="id_main_band" required>'
+            '<select data-context="available-source" '
+            'name="main_band" id="id_main_band" required>'
             '<option value="" selected>---------</option>'
             '<option value="%d">The Beatles</option>'
             '<option value="%d">The Doors</option>'
@@ -645,7 +655,8 @@ class ModelAdminTests(TestCase):
         self.assertHTMLEqual(
             str(form["main_band"]),
             '<div class="related-widget-wrapper" data-model-ref="band">'
-            '<select name="main_band" id="id_main_band" required>'
+            '<select data-context="available-source" '
+            'name="main_band" id="id_main_band" required>'
             '<option value="" selected>---------</option>'
             '<option value="%d">The Doors</option>'
             "</select></div>" % self.band.id,
@@ -739,7 +750,8 @@ class ModelAdminTests(TestCase):
             type(cmafa.base_fields["main_band"].widget.widget), AdminRadioSelect
         )
         self.assertEqual(
-            cmafa.base_fields["main_band"].widget.attrs, {"class": "radiolist inline"}
+            cmafa.base_fields["main_band"].widget.attrs,
+            {"class": "radiolist inline", "data-context": "available-source"},
         )
         self.assertEqual(
             list(cmafa.base_fields["main_band"].widget.choices),
@@ -750,7 +762,8 @@ class ModelAdminTests(TestCase):
             type(cmafa.base_fields["opening_band"].widget.widget), AdminRadioSelect
         )
         self.assertEqual(
-            cmafa.base_fields["opening_band"].widget.attrs, {"class": "radiolist"}
+            cmafa.base_fields["opening_band"].widget.attrs,
+            {"class": "radiolist", "data-context": "available-source"},
         )
         self.assertEqual(
             list(cmafa.base_fields["opening_band"].widget.choices),
@@ -820,7 +833,6 @@ class ModelAdminTests(TestCase):
         tests = (
             (ma.log_addition, ADDITION, {"added": {}}),
             (ma.log_change, CHANGE, {"changed": {"fields": ["name", "bio"]}}),
-            (ma.log_deletion, DELETION, str(self.band)),
         )
         for method, flag, message in tests:
             with self.subTest(name=method.__name__):
@@ -831,12 +843,52 @@ class ModelAdminTests(TestCase):
                 self.assertEqual(fetched.content_type, content_type)
                 self.assertEqual(fetched.object_id, str(self.band.pk))
                 self.assertEqual(fetched.user, mock_request.user)
-                if flag == DELETION:
-                    self.assertEqual(fetched.change_message, "")
-                    self.assertEqual(fetched.object_repr, message)
-                else:
-                    self.assertEqual(fetched.change_message, str(message))
-                    self.assertEqual(fetched.object_repr, str(self.band))
+                self.assertEqual(fetched.change_message, str(message))
+                self.assertEqual(fetched.object_repr, str(self.band))
+
+    def test_log_deletions(self):
+        ma = ModelAdmin(Band, self.site)
+        mock_request = MockRequest()
+        mock_request.user = User.objects.create(username="akash")
+        content_type = get_content_type_for_model(self.band)
+        Band.objects.create(
+            name="The Beatles",
+            bio="A legendary rock band from Liverpool.",
+            sign_date=date(1962, 1, 1),
+        )
+        Band.objects.create(
+            name="Mohiner Ghoraguli",
+            bio="A progressive rock band from Calcutta.",
+            sign_date=date(1975, 1, 1),
+        )
+        queryset = Band.objects.all().order_by("-id")[:3]
+        self.assertEqual(len(queryset), 3)
+        with self.assertNumQueries(1):
+            ma.log_deletions(mock_request, queryset)
+        logs = (
+            LogEntry.objects.filter(action_flag=DELETION)
+            .order_by("id")
+            .values_list(
+                "user_id",
+                "content_type",
+                "object_id",
+                "object_repr",
+                "action_flag",
+                "change_message",
+            )
+        )
+        expected_log_values = [
+            (
+                mock_request.user.id,
+                content_type.id,
+                str(obj.pk),
+                str(obj),
+                DELETION,
+                "",
+            )
+            for obj in queryset
+        ]
+        self.assertSequenceEqual(logs, expected_log_values)
 
     def test_get_autocomplete_fields(self):
         class NameAdmin(ModelAdmin):
@@ -871,7 +923,7 @@ class ModelAdminTests(TestCase):
             username="bob", email="bob@test.com", password="test"
         )
         self.site.register(Band, ModelAdmin)
-        ma = self.site._registry[Band]
+        ma = self.site.get_model_admin(Band)
         (
             deletable_objects,
             model_count,
@@ -898,7 +950,7 @@ class ModelAdminTests(TestCase):
                 return False
 
         self.site.register(Band, TestModelAdmin)
-        ma = self.site._registry[Band]
+        ma = self.site.get_model_admin(Band)
         (
             deletable_objects,
             model_count,

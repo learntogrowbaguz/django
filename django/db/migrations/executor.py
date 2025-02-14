@@ -224,6 +224,9 @@ class MigrationExecutor:
         # remaining applied migrations.
         last_unapplied_migration = plan[-1][0]
         state = states[last_unapplied_migration]
+        # Avoid mutating state with apps rendered as it's an expensive
+        # operation.
+        del state.apps
         for index, (migration, _) in enumerate(full_plan):
             if migration == last_unapplied_migration:
                 for migration, _ in full_plan[index:]:
@@ -251,22 +254,25 @@ class MigrationExecutor:
                 ) as schema_editor:
                     state = migration.apply(state, schema_editor)
                     if not schema_editor.deferred_sql:
-                        self.record_migration(migration)
+                        self.record_migration(migration.app_label, migration.name)
                         migration_recorded = True
         if not migration_recorded:
-            self.record_migration(migration)
+            self.record_migration(migration.app_label, migration.name)
         # Report progress
         if self.progress_callback:
             self.progress_callback("apply_success", migration, fake)
         return state
 
-    def record_migration(self, migration):
+    def record_migration(self, app_label, name, forward=True):
+        migration = self.loader.disk_migrations.get((app_label, name))
         # For replacement migrations, record individual statuses
-        if migration.replaces:
-            for app_label, name in migration.replaces:
-                self.recorder.record_applied(app_label, name)
+        if migration and migration.replaces:
+            for replaced_app_label, replaced_name in migration.replaces:
+                self.record_migration(replaced_app_label, replaced_name, forward)
+        if forward:
+            self.recorder.record_applied(app_label, name)
         else:
-            self.recorder.record_applied(migration.app_label, migration.name)
+            self.recorder.record_unapplied(app_label, name)
 
     def unapply_migration(self, state, migration, fake=False):
         """Run a migration backwards."""
@@ -277,11 +283,7 @@ class MigrationExecutor:
                 atomic=migration.atomic
             ) as schema_editor:
                 state = migration.unapply(state, schema_editor)
-        # For replacement migrations, also record individual statuses.
-        if migration.replaces:
-            for app_label, name in migration.replaces:
-                self.recorder.record_unapplied(app_label, name)
-        self.recorder.record_unapplied(migration.app_label, migration.name)
+        self.record_migration(migration.app_label, migration.name, forward=False)
         # Report progress
         if self.progress_callback:
             self.progress_callback("unapply_success", migration, fake)

@@ -216,9 +216,11 @@ class ModelInheritanceTests(TestCase):
             GrandChild().save()
 
         for i, test in enumerate([a, b]):
-            with self.subTest(i=i), self.assertNumQueries(4), CaptureQueriesContext(
-                connection
-            ) as queries:
+            with (
+                self.subTest(i=i),
+                self.assertNumQueries(4),
+                CaptureQueriesContext(connection) as queries,
+            ):
                 test()
                 for query in queries:
                     sql = query["sql"]
@@ -340,6 +342,11 @@ class ModelInheritanceTests(TestCase):
             foo = models.IntegerField()
 
         self.assertEqual(type(MethodOverride.foo), DeferredAttribute)
+
+    def test_full_clean(self):
+        restaurant = Restaurant.objects.create()
+        with self.assertNumQueries(0), self.assertRaises(ValidationError):
+            restaurant.full_clean()
 
 
 class ModelInheritanceDataTests(TestCase):

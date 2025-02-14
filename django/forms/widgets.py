@@ -9,9 +9,10 @@ from collections import defaultdict
 from graphlib import CycleError, TopologicalSorter
 from itertools import chain
 
-from django.forms.utils import to_current_timezone
+from django.forms.utils import flatatt, to_current_timezone
 from django.templatetags.static import static
 from django.utils import formats
+from django.utils.choices import normalize_choices
 from django.utils.dates import MONTHS
 from django.utils.formats import get_format
 from django.utils.html import format_html, html_safe
@@ -22,6 +23,7 @@ from django.utils.translation import gettext_lazy as _
 from .renderers import get_default_renderer
 
 __all__ = (
+    "Script",
     "Media",
     "MediaDefiningClass",
     "Widget",
@@ -29,6 +31,9 @@ __all__ = (
     "NumberInput",
     "EmailInput",
     "URLInput",
+    "ColorInput",
+    "SearchInput",
+    "TelInput",
     "PasswordInput",
     "HiddenInput",
     "MultipleHiddenInput",
@@ -55,6 +60,53 @@ MEDIA_TYPES = ("css", "js")
 
 class MediaOrderConflictWarning(RuntimeWarning):
     pass
+
+
+@html_safe
+class MediaAsset:
+    element_template = "{path}"
+
+    def __init__(self, path, **attributes):
+        self._path = path
+        self.attributes = attributes
+
+    def __eq__(self, other):
+        # Compare the path only, to ensure performant comparison in Media.merge.
+        return (self.__class__ is other.__class__ and self.path == other.path) or (
+            isinstance(other, str) and self._path == other
+        )
+
+    def __hash__(self):
+        # Hash the path only, to ensure performant comparison in Media.merge.
+        return hash(self._path)
+
+    def __str__(self):
+        return format_html(
+            self.element_template,
+            path=self.path,
+            attributes=flatatt(self.attributes),
+        )
+
+    def __repr__(self):
+        return f"{type(self).__qualname__}({self._path!r})"
+
+    @property
+    def path(self):
+        """
+        Ensure an absolute path.
+        Relative paths are resolved via the {% static %} template tag.
+        """
+        if self._path.startswith(("http://", "https://", "/")):
+            return self._path
+        return static(self._path)
+
+
+class Script(MediaAsset):
+    element_template = '<script src="{path}"{attributes}></script>'
+
+    def __init__(self, src, **attributes):
+        # Alter the signature to allow src to be passed as a keyword argument.
+        super().__init__(src, **attributes)
 
 
 @html_safe
@@ -100,9 +152,11 @@ class Media:
 
     def render_js(self):
         return [
-            path.__html__()
-            if hasattr(path, "__html__")
-            else format_html('<script src="{}"></script>', self.absolute_path(path))
+            (
+                path.__html__()
+                if hasattr(path, "__html__")
+                else format_html('<script src="{}"></script>', self.absolute_path(path))
+            )
             for path in self._js
         ]
 
@@ -112,12 +166,14 @@ class Media:
         media = sorted(self._css)
         return chain.from_iterable(
             [
-                path.__html__()
-                if hasattr(path, "__html__")
-                else format_html(
-                    '<link href="{}" media="{}" rel="stylesheet">',
-                    self.absolute_path(path),
-                    medium,
+                (
+                    path.__html__()
+                    if hasattr(path, "__html__")
+                    else format_html(
+                        '<link href="{}" media="{}" rel="stylesheet">',
+                        self.absolute_path(path),
+                        medium,
+                    )
                 )
                 for path in self._css[medium]
             ]
@@ -346,6 +402,21 @@ class EmailInput(Input):
 class URLInput(Input):
     input_type = "url"
     template_name = "django/forms/widgets/url.html"
+
+
+class ColorInput(Input):
+    input_type = "color"
+    template_name = "django/forms/widgets/color.html"
+
+
+class SearchInput(Input):
+    input_type = "search"
+    template_name = "django/forms/widgets/search.html"
+
+
+class TelInput(Input):
+    input_type = "tel"
+    template_name = "django/forms/widgets/tel.html"
 
 
 class PasswordInput(Input):
@@ -620,10 +691,7 @@ class ChoiceWidget(Widget):
 
     def __init__(self, attrs=None, choices=()):
         super().__init__(attrs)
-        # choices can be any iterable, but we may need to render this widget
-        # multiple times. Thus, collapse it into a list so it can be consumed
-        # more than once.
-        self.choices = list(choices)
+        self.choices = choices
 
     def __deepcopy__(self, memo):
         obj = copy.copy(self)
@@ -740,6 +808,14 @@ class ChoiceWidget(Widget):
         if not isinstance(value, (tuple, list)):
             value = [value]
         return [str(v) if v is not None else "" for v in value]
+
+    @property
+    def choices(self):
+        return self._choices
+
+    @choices.setter
+    def choices(self, value):
+        self._choices = normalize_choices(value)
 
 
 class Select(ChoiceWidget):

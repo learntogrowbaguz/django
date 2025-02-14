@@ -1,4 +1,5 @@
 """Tests related to django.db.backends that haven't been organized."""
+
 import datetime
 import threading
 import unittest
@@ -72,11 +73,22 @@ class LastExecutedQueryTest(TestCase):
         last_executed_query should not raise an exception even if no previous
         query has been run.
         """
+        suffix = connection.features.bare_select_suffix
         with connection.cursor() as cursor:
+            if connection.vendor == "oracle":
+                cursor.statement = None
+            # No previous query has been run.
             connection.ops.last_executed_query(cursor, "", ())
+            # Previous query crashed.
+            connection.ops.last_executed_query(cursor, "SELECT %s" + suffix, (1,))
 
     def test_debug_sql(self):
-        list(Reporter.objects.filter(first_name="test"))
+        qs = Reporter.objects.filter(first_name="test")
+        ops = connections[qs.db].ops
+        with mock.patch.object(ops, "format_debug_sql") as format_debug_sql:
+            list(qs)
+        # Queries are formatted with DatabaseOperations.format_debug_sql().
+        format_debug_sql.assert_called()
         sql = connection.queries[-1]["sql"].lower()
         self.assertIn("select", sql)
         self.assertIn(Reporter._meta.db_table, sql)
@@ -224,6 +236,7 @@ class LongNameTest(TransactionTestCase):
         connection.ops.execute_sql_flush(sql_list)
 
 
+@skipUnlessDBFeature("supports_sequence_reset")
 class SequenceResetTest(TestCase):
     def test_generic_relation(self):
         "Sequence names are correct when resetting generic relations (Ref #13941)"
@@ -556,8 +569,9 @@ class BackendTestCase(TransactionTestCase):
                 "Limit for query logging exceeded, only the last 3 queries will be "
                 "returned."
             )
-            with self.assertWarnsMessage(UserWarning, msg):
+            with self.assertWarnsMessage(UserWarning, msg) as ctx:
                 self.assertEqual(3, len(new_connection.queries))
+            self.assertEqual(ctx.filename, __file__)
 
         finally:
             BaseDatabaseWrapper.queries_limit = old_queries_limit
@@ -567,6 +581,7 @@ class BackendTestCase(TransactionTestCase):
     @override_settings(DEBUG=True)
     def test_queries_logger(self, mocked_logger):
         sql = "SELECT 1" + connection.features.bare_select_suffix
+        sql = connection.ops.format_debug_sql(sql)
         with connection.cursor() as cursor:
             cursor.execute(sql)
         params, kwargs = mocked_logger.debug.call_args
@@ -792,7 +807,8 @@ class ThreadTests(TransactionTestCase):
             # closed on teardown).
             for conn in connections_dict.values():
                 if conn is not connection and conn.allow_thread_sharing:
-                    conn.close()
+                    conn.validate_thread_sharing()
+                    conn._close()
                     conn.dec_thread_sharing()
 
     def test_connections_thread_local(self):

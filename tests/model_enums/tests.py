@@ -186,6 +186,7 @@ class ChoicesTests(SimpleTestCase):
     def test_do_not_call_in_templates_member(self):
         # do_not_call_in_templates is not implicitly treated as a member.
         Special = models.IntegerChoices("Special", "do_not_call_in_templates")
+        self.assertIn("do_not_call_in_templates", Special.__members__)
         self.assertEqual(
             Special.do_not_call_in_templates.label,
             "Do Not Call In Templates",
@@ -195,6 +196,10 @@ class ChoicesTests(SimpleTestCase):
             Special.do_not_call_in_templates.name,
             "do_not_call_in_templates",
         )
+
+    def test_do_not_call_in_templates_nonmember(self):
+        self.assertNotIn("do_not_call_in_templates", Suit.__members__)
+        self.assertIs(Suit.do_not_call_in_templates, True)
 
 
 class Separator(bytes, models.Choices):
@@ -301,13 +306,6 @@ class CustomChoicesTests(SimpleTestCase):
         with self.assertRaisesMessage(TypeError, msg):
 
             class Boolean(bool, models.Choices):
-                pass
-
-    def test_timezone_unsupported(self):
-        msg = "type 'datetime.timezone' is not an acceptable base type"
-        with self.assertRaisesMessage(TypeError, msg):
-
-            class Timezone(datetime.timezone, models.Choices):
                 pass
 
     def test_uuid_unsupported(self):

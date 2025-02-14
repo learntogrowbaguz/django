@@ -43,17 +43,6 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
             return "ALTER TABLE %(table)s DROP CONSTRAINT IF EXISTS %(name)s"
         return "ALTER TABLE %(table)s DROP CHECK %(name)s"
 
-    @property
-    def sql_rename_column(self):
-        # MariaDB >= 10.5.2 and MySQL >= 8.0.4 support an
-        # "ALTER TABLE ... RENAME COLUMN" statement.
-        if self.connection.mysql_is_mariadb:
-            if self.connection.mysql_version >= (10, 5, 2):
-                return super().sql_rename_column
-        elif self.connection.mysql_version >= (8, 0, 4):
-            return super().sql_rename_column
-        return "ALTER TABLE %(table)s CHANGE %(old_column)s %(new_column)s %(type)s"
-
     def quote_value(self, value):
         self.connection.ensure_connection()
         # MySQLdb escapes to string, PyMySQL to bytes.
@@ -71,12 +60,22 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
             and db_type.lower() in self.connection._limited_data_types
         )
 
+    def _is_text_or_blob(self, field):
+        db_type = field.db_type(self.connection)
+        return db_type and db_type.lower().endswith(("blob", "text"))
+
     def skip_default(self, field):
+        default_is_empty = self.effective_default(field) in ("", b"")
+        if default_is_empty and self._is_text_or_blob(field):
+            return True
         if not self._supports_limited_data_type_defaults:
             return self._is_limited_data_type(field)
         return False
 
     def skip_default_on_alter(self, field):
+        default_is_empty = self.effective_default(field) in ("", b"")
+        if default_is_empty and self._is_text_or_blob(field):
+            return True
         if self._is_limited_data_type(field) and not self.connection.mysql_is_mariadb:
             # MySQL doesn't support defaults for BLOB and TEXT in the
             # ALTER COLUMN statement.
@@ -214,7 +213,7 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         Keep the NULL and DEFAULT properties of the old field. If it has
         changed, it will be handled separately.
         """
-        if field.db_default is not NOT_PROVIDED:
+        if field.has_db_default():
             default_sql, params = self.db_default_sql(field)
             default_sql %= tuple(self.quote_value(p) for p in params)
             new_type += f" DEFAULT {default_sql}"
@@ -233,16 +232,10 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         )
 
     def _field_db_check(self, field, field_db_params):
-        if self.connection.mysql_is_mariadb and self.connection.mysql_version >= (
-            10,
-            5,
-            2,
-        ):
+        if self.connection.mysql_is_mariadb:
             return super()._field_db_check(field, field_db_params)
-        # On MySQL and MariaDB < 10.5.2 (no support for
-        # "ALTER TABLE ... RENAME COLUMN" statements), check constraints with
-        # the column name as it requires explicit recreation when the column is
-        # renamed.
+        # On MySQL, check constraints with the column name as it requires
+        # explicit recreation when the column is renamed.
         return field_db_params["check"]
 
     def _rename_field_sql(self, table, old_field, new_field, new_type):
@@ -258,7 +251,7 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         return f" COMMENT {comment_sql}"
 
     def _alter_column_null_sql(self, model, old_field, new_field):
-        if new_field.db_default is NOT_PROVIDED:
+        if not new_field.has_db_default():
             return super()._alter_column_null_sql(model, old_field, new_field)
 
         new_db_params = new_field.db_parameters(connection=self.connection)

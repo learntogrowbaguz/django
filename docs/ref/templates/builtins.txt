@@ -244,11 +244,6 @@ Outputs a whole load of debugging information, including the current context
 and imported modules. ``{% debug %}`` outputs nothing when the :setting:`DEBUG`
 setting is ``False``.
 
-.. versionchanged:: 2.2.27
-
-    In older versions, debugging information was displayed when the
-    :setting:`DEBUG` setting was ``False``.
-
 .. templatetag:: extends
 
 ``extends``
@@ -524,11 +519,10 @@ Use of both ``and`` and ``or`` clauses within the same tag is allowed, with
 
     {% if athlete_list and coach_list or cheerleader_list %}
 
-will be interpreted like:
+will be interpreted like::
 
-.. code-block:: pycon
-
-    if (athlete_list and coach_list) or cheerleader_list
+    if (athlete_list and coach_list) or cheerleader_list:
+        ...
 
 Use of actual parentheses in the :ttag:`if` tag is invalid syntax. If you need
 them to indicate precedence, you should use nested :ttag:`if` tags.
@@ -957,6 +951,109 @@ output (as a string) inside a variable. This is useful if you want to use
 
     {% now "Y" as current_year %}
     {% blocktranslate %}Copyright {{ current_year }}{% endblocktranslate %}
+
+.. templatetag:: querystring
+
+``querystring``
+----------------
+
+Outputs a URL-encoded formatted query string based on the provided parameters.
+
+This tag requires a :class:`~django.http.QueryDict` instance, which defaults to
+:attr:`request.GET <django.http.HttpRequest.GET>` if none is provided.
+
+If the :class:`~django.http.QueryDict` is empty and no additional parameters
+are provided, an empty string is returned. Otherwise, the result includes a
+leading ``"?"``.
+
+.. admonition:: Using ``request.GET`` as default
+
+    To use ``request.GET`` as the default ``QueryDict`` instance, the
+    ``django.template.context_processors.request`` context processor should be
+    enabled. If it's not enabled, you must either explicitly pass the
+    ``request`` object into the template context, or provide a ``QueryDict``
+    instance to this tag.
+
+Basic usage
+~~~~~~~~~~~
+
+.. code-block:: html+django
+
+    {% querystring %}
+
+Outputs the current query string verbatim. So if the query string is
+``?color=green``, the output would be ``?color=green``.
+
+.. code-block:: html+django
+
+    {% querystring size="M" %}
+
+Outputs the current query string with the addition of the ``size`` parameter.
+Following the previous example, the output would be ``?color=green&size=M``.
+
+Custom QueryDict
+~~~~~~~~~~~~~~~~
+
+.. code-block:: html+django
+
+    {% querystring my_query_dict %}
+
+You can provide a custom ``QueryDict`` to be used instead of ``request.GET``.
+So if ``my_query_dict`` is ``<QueryDict: {'color': ['blue']}>``, this outputs
+``?color=blue``.
+
+Setting items
+~~~~~~~~~~~~~
+
+.. code-block:: html+django
+
+    {% querystring color="red" size="S" %}
+
+Adds or modifies parameters in the query string. Each keyword argument will be
+added to the query string, replacing any existing value for that key. For
+instance, if the current query string is ``?color=green``, the output will be
+``?color=red&size=S``.
+
+Removing items
+~~~~~~~~~~~~~~
+
+.. code-block:: html+django
+
+    {% querystring color=None %}
+
+Passing ``None`` as the value removes the parameter from the query string. For
+example, if the current query string is ``?color=green&size=M``, the output
+will be ``?size=M``.
+
+Handling lists
+~~~~~~~~~~~~~~
+
+.. code-block:: html+django
+
+    {% querystring color=my_list %}
+
+If ``my_list`` is ``["red", "blue"]``, the output will be
+``?color=red&color=blue``, preserving the list structure in the query string.
+
+Dynamic usage
+~~~~~~~~~~~~~
+
+A common example of using this tag is to preserve the current query string when
+displaying a page of results, while adding a link to the next and previous
+pages of results. For example, if the paginator is currently on page 3, and the
+current query string is ``?color=blue&size=M&page=3``, the following code would
+output ``?color=blue&size=M&page=4``:
+
+.. code-block:: html+django
+
+    {% querystring page=page.next_page_number %}
+
+You can also store the value in a variable. For example, if you need multiple
+links to the same page, define it as:
+
+.. code-block:: html+django
+
+    {% querystring page=page.next_page_number as next_page %}
 
 .. templatetag:: regroup
 
@@ -1803,11 +1900,6 @@ produce empty output:
 
 Ordering by elements at specified index is not supported on dictionaries.
 
-.. versionchanged:: 2.2.26
-
-    In older versions, ordering elements at specified index was supported on
-    dictionaries.
-
 .. templatefilter:: dictsortreversed
 
 ``dictsortreversed``
@@ -1877,25 +1969,24 @@ For example, you can apply ``escape`` to fields when :ttag:`autoescape` is off:
 ``escapejs``
 ------------
 
-Escapes characters for use in JavaScript strings. This does *not* make the
-string safe for use in HTML or JavaScript template literals, but does protect
-you from syntax errors when using templates to generate JavaScript/JSON.
+Escapes characters for use as a whole JavaScript string literal, within single
+or double quotes, as below. This filter does not make the string safe for use
+in *"JavaScript template literals"* (the JavaScript backtick syntax). Any other
+uses not listed above are not supported. It is generally recommended that data
+should be passed using HTML ``data-`` attributes, or the :tfilter:`json_script`
+filter, rather than in embedded JavaScript.
 
 For example:
 
 .. code-block:: html+django
 
-    {{ value|escapejs }}
-
-If ``value`` is ``"testing\r\njavascript 'string\" <b>escaping</b>"``,
-the output will be ``"testing\\u000D\\u000Ajavascript \\u0027string\\u0022 \\u003Cb\\u003Eescaping\\u003C/b\\u003E"``.
+    <script>
+    let myValue = '{{ value|escapejs }}'
 
 .. templatefilter:: escapeseq
 
 ``escapeseq``
 -------------
-
-.. versionadded:: 5.0
 
 Applies the :tfilter:`escape` filter to each element of a sequence. Useful in
 conjunction with other filters that operate on sequences, such as
@@ -2079,7 +2170,8 @@ For example:
 
     {{ value|iriencode }}
 
-If ``value`` is ``"?test=1&me=2"``, the output will be ``"?test=1&amp;me=2"``.
+If ``value`` is ``"?test=I ♥ Django"``, the output will be
+``"?test=I%20%E2%99%A5%20Django"``.
 
 .. templatefilter:: join
 
@@ -2169,24 +2261,6 @@ If ``value`` is ``['a', 'b', 'c', 'd']`` or ``"abcd"``, the output will be
 ``4``.
 
 The filter returns ``0`` for an undefined variable.
-
-.. templatefilter:: length_is
-
-``length_is``
--------------
-
-.. deprecated:: 4.2
-
-Returns ``True`` if the value's length is the argument, or ``False`` otherwise.
-
-For example:
-
-.. code-block:: html+django
-
-    {{ value|length_is:"4" }}
-
-If ``value`` is ``['a', 'b', 'c', 'd']`` or ``"abcd"``, the output will be
-``True``.
 
 .. templatefilter:: linebreaks
 
@@ -2440,8 +2514,8 @@ individual elements of the sequence.
 
 Returns a slice of the list.
 
-Uses the same syntax as Python's list slicing. See
-https://diveinto.org/python3/native-datatypes.html#slicinglists for an
+Uses the same syntax as Python's list slicing. See the `Python documentation
+<https://docs.python.org/3/tutorial/introduction.html#lists>`_ for an
 introduction.
 
 Example:
@@ -2675,6 +2749,12 @@ If ``value`` is ``"<p>Joel is a slug</p>"``, the output will be
 
 Newlines in the HTML content will be preserved.
 
+.. admonition:: Size of input string
+
+    Processing large, potentially malformed HTML strings can be
+    resource-intensive and impact service performance. ``truncatechars_html``
+    limits input to the first five million characters.
+
 .. templatefilter:: truncatewords
 
 ``truncatewords``
@@ -2716,6 +2796,12 @@ If ``value`` is ``"<p>Joel is a slug</p>"``, the output will be
 ``"<p>Joel is …</p>"``.
 
 Newlines in the HTML content will be preserved.
+
+.. admonition:: Size of input string
+
+    Processing large, potentially malformed HTML strings can be
+    resource-intensive and impact service performance. ``truncatewords_html``
+    limits input to the first five million characters.
 
 .. templatefilter:: unordered_list
 
@@ -2795,8 +2881,8 @@ If ``value`` is ``"https://www.example.org/"``, the output will be
 Converts URLs and email addresses in text into clickable links.
 
 This template tag works on links prefixed with ``http://``, ``https://``, or
-``www.``. For example, ``https://goo.gl/aia1t`` will get converted but
-``goo.gl/aia1t`` won't.
+``www.``. For example, ``https://djangocon.eu`` will get converted but
+``djangocon.eu`` won't.
 
 It also supports domain-only links ending in one of the original top level
 domains (``.com``, ``.edu``, ``.gov``, ``.int``, ``.mil``, ``.net``, and
@@ -2833,6 +2919,17 @@ Django's built-in :tfilter:`escape` filter. The default value for
     If ``urlize`` is applied to text that already contains HTML markup, or to
     email addresses that contain single quotes (``'``), things won't work as
     expected. Apply this filter only to plain text.
+
+.. warning::
+
+    Using ``urlize`` or ``urlizetrunc`` can incur a performance penalty, which
+    can become severe when applied to user controlled values such as content
+    stored in a :class:`~django.db.models.TextField`. You can use
+    :tfilter:`truncatechars` to add a limit to such inputs:
+
+    .. code-block:: html+django
+
+        {{ value|truncatechars:500|urlize }}
 
 .. templatefilter:: urlizetrunc
 
@@ -3001,7 +3098,7 @@ slightly different call:
 
     {% load static %}
     {% static "images/hi.jpg" as myphoto %}
-    <img src="{{ myphoto }}">
+    <img src="{{ myphoto }}" alt="Hi!">
 
 .. admonition:: Using Jinja2 templates?
 
